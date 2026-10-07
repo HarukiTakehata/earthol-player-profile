@@ -25,6 +25,8 @@ import { invalidateProfiles } from '../lib/profile-cache';
 import { gravatarAvatarUrl } from '../lib/gravatar';
 import { githubConfigured } from '../lib/oauth-github';
 import { resolveGithub, resolveGravatarMirror, resolveMailer } from '../lib/config';
+import { DEFAULT_CHAT_PROMPT, resolveOpenAI } from '../lib/openai';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { isTheme, isVisibility } from '../lib/themes';
 import {
   isSafeUrl,
@@ -306,4 +308,126 @@ dashboardRoutes.post('/dashboard/identities/email', async (c) => {
   }
 
   return c.redirect('/dashboard?saved=email_sent');
+});
+
+/** AI assistant: streams a chat completion back to the dashboard over SSE. */
+dashboardRoutes.post('/dashboard/ai/chat', async (c) => {
+  const user = c.get('user')!;
+  const settings = c.get('settings');
+  const t = c.get('t');
+
+  const resolved = resolveOpenAI(c.env, settings);
+  if (!resolved) {
+    return c.json({ error: t('dash.ai.notConfigured') }, 503);
+  }
+
+  const body = await c.req.parseBody();
+  let parsed: unknown = [];
+  try {
+    parsed = JSON.parse(typeof body.messages === 'string' ? body.messages : '[]');
+  } catch {
+    parsed = [];
+  }
+
+  const history: ChatCompletionMessageParam[] = [];
+  if (Array.isArray(parsed)) {
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object') continue;
+      const role = (entry as { role?: unknown }).role;
+      const content = (entry as { content?: unknown }).content;
+      if (typeof content !== 'string') continue;
+      const trimmed = content.trim().slice(0, 4000);
+      if (!trimmed) continue;
+      if (role === 'user') history.push({ role: 'user', content: trimmed });
+      else if (role === 'assistant') history.push({ role: 'assistant', content: trimmed });
+    }
+  }
+
+  if (history.length === 0) {
+    return c.json({ error: t('dash.ai.error') }, 400);
+  }
+
+  // Prefer the caller's current (possibly unsaved) form content, which the
+  // dashboard sends as `profile`; fall back to the stored profile when absent.
+  let clientProfile: Record<string, unknown> = {};
+  try {
+    const raw = typeof body.profile === 'string' ? JSON.parse(body.profile) : null;
+    if (raw && typeof raw === 'object') clientProfile = raw as Record<string, unknown>;
+  } catch {
+    clientProfile = {};
+  }
+
+  const value = (key: string, fallback: string): string => {
+    const raw = clientProfile[key];
+    const text = typeof raw === 'string' ? raw.trim().slice(0, 1000) : '';
+    return text || fallback || '(empty)';
+  };
+
+  const lines = [
+    `display name: ${value('display_name', user.display_name ?? '')}`,
+    `headline: ${value('headline', user.headline ?? '')}`,
+    `bio: ${value('bio', user.bio ?? '')}`,
+    `location: ${value('location', user.location ?? '')}`,
+    `website: ${value('website', user.website ?? '')}`,
+    `pronouns: ${value('pronouns', user.pronouns ?? '')}`,
+  ];
+
+  const clientFields = Array.isArray(clientProfile.fields) ? clientProfile.fields : [];
+  const fieldLines = clientFields
+    .filter((field): field is Record<string, unknown> => Boolean(field) && typeof field === 'object')
+    .map((field) =>
+      `${String(field.label ?? '').slice(0, 40)}: ${String(field.value ?? '').slice(0, 300)}`.trim(),
+    )
+    .filter((line) => line.length > 1)
+    .slice(0, 20);
+  if (fieldLines.length) lines.push('fields:', ...fieldLines.map((line) => `- ${line}`));
+
+  const clientTags = Array.isArray(clientProfile.tags) ? clientProfile.tags : [];
+  const tagValues = clientTags
+    .filter((tag): tag is Record<string, unknown> => Boolean(tag) && typeof tag === 'object')
+    .map((tag) => {
+      const label = String(tag.value ?? '').slice(0, 40).trim();
+      const category = String(tag.category ?? '').slice(0, 40).trim();
+      if (!label) return '';
+      return category ? `${category}: ${label}` : label;
+    })
+    .filter(Boolean)
+    .slice(0, 20);
+  if (tagValues.length) lines.push(`tags: ${tagValues.join(', ')}`);
+
+  const profile = lines.join('\n');
+  const system = `${settings.openaiPromptChat || DEFAULT_CHAT_PROMPT}\n\nThe user's current profile:\n${profile}`;
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (payload: Record<string, unknown>) =>
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+      try {
+        const completion = await resolved.client.chat.completions.create({
+          model: resolved.model,
+          messages: [{ role: 'system', content: system }, ...history.slice(-20)],
+          stream: true,
+          temperature: 0.7,
+        });
+        for await (const chunk of completion) {
+          const delta = chunk.choices[0]?.delta?.content;
+          if (delta) send({ delta });
+        }
+        send({ done: true });
+      } catch (error) {
+        console.error('AI chat stream error:', error);
+        send({ error: t('dash.ai.error') });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+    },
+  });
 });

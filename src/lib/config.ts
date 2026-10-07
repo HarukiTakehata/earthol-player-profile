@@ -37,7 +37,10 @@ export type EnvKey =
   | 'smtpUser'
   | 'smtpPassword'
   | 'smtpFrom'
-  | 'gravatarMirror';
+  | 'gravatarMirror'
+  | 'openaiApiKey'
+  | 'openaiBaseUrl'
+  | 'openaiModel';
 
 /** Per-field lock: the env var name that wins, or `null` when editable. */
 export type EnvLocks = Record<EnvKey, string | null>;
@@ -63,6 +66,9 @@ export function envLocks(env: Env): EnvLocks {
     smtpPassword: locked(env.SMTP_PASSWORD, 'SMTP_PASSWORD'),
     smtpFrom: locked(env.SMTP_FROM, 'SMTP_FROM'),
     gravatarMirror: locked(env.GRAVATAR_MIRROR, 'GRAVATAR_MIRROR'),
+    openaiApiKey: locked(env.OPENAI_API_KEY, 'OPENAI_API_KEY'),
+    openaiBaseUrl: locked(env.OPENAI_BASE_URL, 'OPENAI_BASE_URL'),
+    openaiModel: locked(env.OPENAI_MODEL, 'OPENAI_MODEL'),
   };
 }
 

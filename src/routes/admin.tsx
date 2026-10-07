@@ -40,6 +40,7 @@ import {
   resolveGravatarMirror,
   resolveMailer,
 } from '../lib/config';
+import { resolveOpenAI } from '../lib/openai';
 import { appUrl } from '../lib/env';
 
 export const adminRoutes = new Hono<AppContext>();
@@ -116,6 +117,10 @@ adminRoutes.get('/admin', async (c) => {
     smtpPasswordSet: Boolean(mailer.password),
     smtpFrom: mailer.from,
     gravatarMirror: resolveGravatarMirror(c.env, settings),
+    openaiApiKeySet: Boolean(resolveOpenAI(c.env, settings)),
+    openaiBaseUrl: settings.openaiBaseUrl,
+    openaiModel: settings.openaiModel,
+    openaiPromptChat: settings.openaiPromptChat,
   };
 
   return c.html(
@@ -184,6 +189,11 @@ adminRoutes.post('/admin/settings', async (c) => {
     smtpPassword: current.smtpPassword,
     smtpFrom: current.smtpFrom,
     gravatarMirror: current.gravatarMirror,
+    // AI Configuration
+    openaiApiKey: current.openaiApiKey,
+    openaiBaseUrl: current.openaiBaseUrl,
+    openaiModel: current.openaiModel,
+    openaiPromptChat: current.openaiPromptChat,
   });
 
   // Cached profile HTML embeds the favicon <link> and the nav logo, so a
@@ -208,7 +218,7 @@ adminRoutes.post('/admin/config', async (c) => {
   const locks = envLocks(c.env);
   const body = await c.req.parseBody();
   const next = { ...current };
-
+  
   if (!locks.githubClientId) {
     next.githubClientId = text(body.github_client_id, 200);
   }
@@ -216,7 +226,7 @@ adminRoutes.post('/admin/config', async (c) => {
     const secret = str(body.github_client_secret);
     if (secret) next.githubClientSecret = secret.slice(0, MAX_SECRET);
   }
-
+  
   if (!locks.mailerDriver) {
     next.mailerDriver = text(body.mailer_driver, 20) === 'smtp' ? 'smtp' : '';
   }
@@ -240,13 +250,28 @@ adminRoutes.post('/admin/config', async (c) => {
   if (!locks.smtpFrom) {
     next.smtpFrom = text(body.smtp_from, 200);
   }
-
+  
   if (!locks.gravatarMirror) {
     const mirror = text(body.gravatar_mirror, 500);
     // A non-empty but unsafe URL keeps the current value.
     next.gravatarMirror = mirror && !isSafeUrl(mirror) ? current.gravatarMirror : mirror;
   }
-
+  
+  // AI Configuration. Prompt fields have no backing env var, so they are
+  // always editable. The API key is a secret and is never echoed, so a blank
+  // submission keeps the stored value.
+  if (!locks.openaiApiKey) {
+    const key = str(body.openai_api_key).trim();
+    if (key) next.openaiApiKey = key.slice(0, MAX_SECRET);
+  }
+  if (!locks.openaiBaseUrl) {
+    next.openaiBaseUrl = text(body.openai_base_url, 500);
+  }
+  if (!locks.openaiModel) {
+    next.openaiModel = text(body.openai_model, 50);
+  }
+  next.openaiPromptChat = text(body.openai_prompt_chat, 1000);
+  
   await saveSettings(c.env, next);
   return c.redirect('/admin?saved=config');
 });
@@ -351,6 +376,22 @@ adminRoutes.post('/admin/users/:id/admin', async (c) => {
 
   await setUserAdmin(c.env.DB, id, target.is_admin !== 1);
   return c.redirect('/admin?saved=user');
+});
+
+// AI Configuration endpoint. Returns an HTML fragment (htmx swaps it into
+// `#ai-test-result`). The key is not validated against the provider: any
+// non-empty key counts as configured.
+adminRoutes.post('/admin/ai/test', async (c) => {
+  const t = c.get('t');
+  const configured = Boolean(resolveOpenAI(c.env, c.get('settings')));
+
+  const variant = configured ? 'success' : 'error';
+  const message = configured ? t('admin.ai.testSuccess') : t('admin.ai.notConfigured');
+  return c.html(
+    `<div id="ai-test-result" class="text-xs ${
+      variant === 'success' ? 'text-success' : 'text-danger'
+    }">${message}</div>`,
+  );
 });
 
 adminRoutes.post('/admin/users/:id/delete', async (c) => {

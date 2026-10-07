@@ -31,6 +31,11 @@ export interface Env {
   SMTP_FROM?: string;
 
   ADMIN_EMAILS?: string;
+
+  /** OpenAI API configuration */
+  OPENAI_API_KEY?: string;
+  OPENAI_BASE_URL?: string;
+  OPENAI_MODEL?: string;
 }
 
 export interface Variables {

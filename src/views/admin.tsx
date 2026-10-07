@@ -100,6 +100,10 @@ export interface AdminViewProps {
     smtpPasswordSet: boolean;
     smtpFrom: string;
     gravatarMirror: string;
+    openaiApiKeySet: boolean;
+    openaiBaseUrl: string;
+    openaiModel: string;
+    openaiPromptChat: string;
   };
   envLocks: EnvLocks;
   githubCallbackUrl: string;
@@ -406,6 +410,70 @@ export function AdminView({
               locked={envLocks.smtpFrom}
               t={t}
             />
+          </div>
+
+          <h3 class="mb-3 mt-6 text-sm font-semibold">{t('admin.ai.heading')}</h3>
+          <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.ai.subtitle')}</p>
+
+          <div class="grid gap-4 sm:grid-cols-2">
+            <ConfigField
+              id="openai_api_key"
+              name="openai_api_key"
+              type="password"
+              label={t('admin.ai.apiKey')}
+              placeholder={integrations.openaiApiKeySet ? t('admin.integrations.secretSet') : undefined}
+              locked={envLocks.openaiApiKey}
+              warnInsecure
+              insecureEnv="OPENAI_API_KEY"
+              t={t}
+            />
+            <ConfigField
+              id="openai_base_url"
+              name="openai_base_url"
+              label={t('admin.ai.baseUrl')}
+              value={integrations.openaiBaseUrl}
+              placeholder="https://api.openai.com/v1"
+              hint={t('admin.ai.baseUrlHint')}
+              locked={envLocks.openaiBaseUrl}
+              t={t}
+            />
+            <ConfigField
+              id="openai_model"
+              name="openai_model"
+              label={t('admin.ai.model')}
+              value={integrations.openaiModel}
+              placeholder="gpt-3.5-turbo"
+              hint={t('admin.ai.modelHint')}
+              locked={envLocks.openaiModel}
+              t={t}
+            />
+          </div>
+
+          <div class="mt-4">
+            <label class="label mb-1.5" for="openai_prompt_chat">
+              {t('admin.ai.prompt')}
+            </label>
+            <textarea
+              id="openai_prompt_chat"
+              name="openai_prompt_chat"
+              rows={4}
+              class="field w-full rounded-2xl"
+              placeholder={t('admin.ai.promptHint')}
+            >{integrations.openaiPromptChat}</textarea>
+          </div>
+
+          <div class="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              class="btn-outline"
+              hx-post="/admin/ai/test"
+              hx-target="#ai-test-result"
+              hx-swap="outerHTML"
+              hx-vals={JSON.stringify({ _csrf: csrfToken })}
+            >
+              {t('admin.ai.test')}
+            </button>
+            <div id="ai-test-result" class="min-h-4 text-xs text-muted-foreground"></div>
           </div>
 
           <h3 class="mb-3 mt-6 text-sm font-semibold">{t('admin.integrations.gravatarHeading')}</h3>

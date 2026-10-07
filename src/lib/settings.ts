@@ -30,6 +30,11 @@ export interface SiteSettings {
   smtpPassword: string;
   smtpFrom: string;
   gravatarMirror: string;
+  // AI Configuration
+  openaiApiKey: string;
+  openaiBaseUrl: string;
+  openaiModel: string;
+  openaiPromptChat: string;
 }
 
 const CACHE_KEY = 'settings:all';
@@ -58,6 +63,11 @@ const KEY = {
   smtpPassword: 'smtp_password',
   smtpFrom: 'smtp_from',
   gravatarMirror: 'gravatar_mirror',
+  // AI Configuration
+  openaiApiKey: 'openai_api_key',
+  openaiBaseUrl: 'openai_base_url',
+  openaiModel: 'openai_model',
+  openaiPromptChat: 'openai_prompt_chat',
 };
 
 const DEFAULTS: SiteSettings = {
@@ -83,6 +93,11 @@ const DEFAULTS: SiteSettings = {
   smtpPassword: '',
   smtpFrom: '',
   gravatarMirror: '',
+  // AI Configuration
+  openaiApiKey: '',
+  openaiBaseUrl: '',
+  openaiModel: 'gpt-3.5-turbo',
+  openaiPromptChat: '',
 };
 
 function toBool(value: string | undefined, fallback: boolean): boolean {
@@ -132,6 +147,11 @@ export async function getSettings(env: Env): Promise<SiteSettings> {
     smtpPassword: map[KEY.smtpPassword] ?? DEFAULTS.smtpPassword,
     smtpFrom: map[KEY.smtpFrom] ?? DEFAULTS.smtpFrom,
     gravatarMirror: map[KEY.gravatarMirror] ?? DEFAULTS.gravatarMirror,
+    // AI Configuration
+    openaiApiKey: map[KEY.openaiApiKey] ?? DEFAULTS.openaiApiKey,
+    openaiBaseUrl: map[KEY.openaiBaseUrl] ?? DEFAULTS.openaiBaseUrl,
+    openaiModel: map[KEY.openaiModel] ?? DEFAULTS.openaiModel,
+    openaiPromptChat: map[KEY.openaiPromptChat] ?? DEFAULTS.openaiPromptChat,
   };
 
   try {
@@ -168,6 +188,11 @@ export async function saveSettings(env: Env, settings: SiteSettings): Promise<vo
     [KEY.smtpPassword]: settings.smtpPassword,
     [KEY.smtpFrom]: settings.smtpFrom,
     [KEY.gravatarMirror]: settings.gravatarMirror,
+    // AI Configuration
+    [KEY.openaiApiKey]: settings.openaiApiKey,
+    [KEY.openaiBaseUrl]: settings.openaiBaseUrl,
+    [KEY.openaiModel]: settings.openaiModel,
+    [KEY.openaiPromptChat]: settings.openaiPromptChat,
   });
   try {
     await env.KV.delete(CACHE_KEY);
