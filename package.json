@@ -1,6 +1,6 @@
 {
   "name": "earthol-player-profile",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,7 +23,8 @@
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/lint": "^6.9.7",
     "hono": "^4.6.14",
-    "mfm-js": "^0.26.0"
+    "mfm-js": "^0.26.0",
+    "openai": "^4.104.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260908.1",

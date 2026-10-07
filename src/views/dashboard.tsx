@@ -75,6 +75,54 @@ export function Dashboard({
       pathname={pathname}
       isAdmin={isAdmin}
     >
+      {/* AI Assistant Modal */}
+      <div id="ai-modal" class="fixed inset-0 z-50 hidden">
+        <div class="fixed inset-0 bg-black/50" data-ai-close></div>
+        <div class="fixed left-1/2 top-1/2 flex w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl bg-card p-6 shadow-xl">
+          <div class="mb-4 flex items-center justify-between">
+            <h3 class="text-lg font-bold tracking-tight">{t('dash.ai.title')}</h3>
+            <button type="button" data-ai-close class="btn-icon" aria-label={t('dash.ai.cancel')}>
+              <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+          </div>
+
+          <div id="ai-messages" class="flex h-80 flex-col gap-3 overflow-y-auto rounded-2xl bg-muted/40 p-4"></div>
+          <p id="ai-empty" class="mt-2 text-center text-xs text-muted-foreground">{t('dash.ai.empty')}</p>
+
+          <div id="ai-loading" class="hidden mt-2">
+            <div class="flex items-center gap-2 text-xs text-muted-foreground">
+              <span class="animate-spin material-symbols-outlined icon-sm">refresh</span>
+              {t('dash.ai.loading')}
+            </div>
+          </div>
+
+          <div id="ai-error" class="mt-2 hidden rounded-2xl bg-danger/10 px-4 py-3 text-sm text-danger"></div>
+
+          <div class="mt-4 flex items-end gap-2">
+            <textarea
+              id="ai-input"
+              rows={2}
+              placeholder={t('dash.ai.placeholder')}
+              class="field min-h-11 flex-1 resize-none rounded-2xl"
+            ></textarea>
+            <button type="button" data-ai-send class="btn-primary shrink-0">
+              {t('dash.ai.send')}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Floating AI Button */}
+      <button
+        type="button"
+        data-ai-open
+        class="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 transition-all duration-200 hover:scale-110"
+        aria-label={t('dash.ai.button')}
+        title={t('dash.ai.button')}
+      >
+        <span class="material-symbols-outlined text-2xl" aria-hidden="true">smart_toy</span>
+      </button>
+
       <section class="space-y-6">
         {error ? (
           <p class="rounded-2xl bg-danger/10 px-5 py-4 text-sm text-danger ring-1 ring-inset ring-danger/25">
@@ -90,16 +138,14 @@ export function Dashboard({
         <form method="post" action="/dashboard/profile" class="card p-6">
           <input type="hidden" name="_csrf" value={csrfToken} />
 
-          <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 class="text-lg font-bold tracking-tight">{t('dash.sheetHeading')}</h2>
-              <p class="mt-0.5 text-sm text-muted-foreground">
-                {t('dash.publicUrl')}{' '}
-                <a class="font-semibold text-primary hover:underline" href={`/${user.username}`}>
-                  /{user.username}
-                </a>
-              </p>
-            </div>
+          <div class="mb-5">
+            <h2 class="text-lg font-bold tracking-tight">{t('dash.sheetHeading')}</h2>
+            <p class="mt-0.5 text-sm text-muted-foreground">
+              {t('dash.publicUrl')}{' '}
+              <a class="font-semibold text-primary hover:underline" href={`/${user.username}`}>
+                /{user.username}
+              </a>
+            </p>
           </div>
 
           <div class="grid gap-4 sm:grid-cols-2">
@@ -583,6 +629,294 @@ export function Dashboard({
           )}
         </form>
       </section>
+
+      <script 
+        nonce={nonce}
+        dangerouslySetInnerHTML={{
+          __html: `
+            var AI_CSRF = ${JSON.stringify(csrfToken)};
+            var AI_LABELS = ${JSON.stringify({
+              error: t('dash.ai.error'),
+              copy: t('dash.ai.copy'),
+              copied: t('dash.ai.copied'),
+            })};
+            var aiHistory = [];
+            var aiStreaming = false;
+
+            document.addEventListener('click', function (ev) {
+              var node = ev.target;
+              while (node && node !== document.body) {
+                if (node.hasAttribute) {
+                  if (node.hasAttribute('data-ai-open')) {
+                    ev.preventDefault();
+                    openAIModal();
+                    return;
+                  }
+                  if (node.hasAttribute('data-ai-close')) {
+                    ev.preventDefault();
+                    document.getElementById('ai-modal')?.classList.add('hidden');
+                    return;
+                  }
+                  if (node.hasAttribute('data-ai-send')) {
+                    ev.preventDefault();
+                    sendAIMessage();
+                    return;
+                  }
+                  if (node.hasAttribute('data-ai-copy')) {
+                    ev.preventDefault();
+                    copyAIMessage(node);
+                    return;
+                  }
+                }
+                node = node.parentNode;
+              }
+            });
+
+            document.addEventListener('keydown', function (ev) {
+              if (ev.key !== 'Enter' || ev.shiftKey) return;
+              var target = ev.target;
+              if (target && target.id === 'ai-input') {
+                ev.preventDefault();
+                sendAIMessage();
+              }
+            });
+
+            function openAIModal() {
+              document.getElementById('ai-modal')?.classList.remove('hidden');
+              updateAIEmpty();
+              document.getElementById('ai-input')?.focus();
+            }
+
+            function updateAIEmpty() {
+              var empty = document.getElementById('ai-empty');
+              var list = document.getElementById('ai-messages');
+              if (empty && list) empty.classList.toggle('hidden', list.children.length > 0);
+            }
+
+            function addBubble(role, text) {
+              var list = document.getElementById('ai-messages');
+              var row = document.createElement('div');
+              row.className = role === 'user' ? 'flex justify-end' : 'flex justify-start';
+
+              var column = document.createElement('div');
+              column.className =
+                role === 'user'
+                  ? 'flex max-w-[80%] flex-col items-end gap-1'
+                  : 'flex max-w-[80%] flex-col items-start gap-1';
+
+              var bubble = document.createElement('div');
+              bubble.className =
+                role === 'user'
+                  ? 'whitespace-pre-wrap rounded-2xl bg-primary px-4 py-2 text-sm text-primary-foreground'
+                  : 'whitespace-pre-wrap rounded-2xl bg-card px-4 py-2 text-sm text-foreground ring-1 ring-inset ring-border';
+              bubble.textContent = text;
+              bubble.setAttribute('data-ai-bubble', '');
+              column.appendChild(bubble);
+
+              if (role === 'assistant') {
+                var copy = document.createElement('button');
+                copy.type = 'button';
+                copy.setAttribute('data-ai-copy', '');
+                copy.className =
+                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground';
+                copy.setAttribute('aria-label', AI_LABELS.copy);
+                copy.title = AI_LABELS.copy;
+                copy.appendChild(copyIcon('content_copy'));
+                column.appendChild(copy);
+              }
+
+              row.appendChild(column);
+              list.appendChild(row);
+              list.scrollTop = list.scrollHeight;
+              updateAIEmpty();
+              return bubble;
+            }
+
+            function copyIcon(name) {
+              var icon = document.createElement('span');
+              icon.className = 'material-symbols-outlined icon-sm';
+              icon.setAttribute('aria-hidden', 'true');
+              icon.textContent = name;
+              return icon;
+            }
+
+            function copyAIMessage(button) {
+              var column = button.parentNode;
+              var bubble = column ? column.querySelector('[data-ai-bubble]') : null;
+              var text = bubble ? bubble.textContent : '';
+              if (!text) return;
+              var done = function () {
+                button.textContent = '';
+                button.appendChild(copyIcon('check'));
+                setTimeout(function () {
+                  button.textContent = '';
+                  button.appendChild(copyIcon('content_copy'));
+                }, 1500);
+              };
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(done).catch(function () {});
+                return;
+              }
+              var area = document.createElement('textarea');
+              area.value = text;
+              area.setAttribute('readonly', '');
+              area.style.position = 'fixed';
+              area.style.opacity = '0';
+              document.body.appendChild(area);
+              area.select();
+              try {
+                document.execCommand('copy');
+                done();
+              } catch (e) {
+                /* ignore */
+              }
+              document.body.removeChild(area);
+            }
+
+            function setAIBusy(busy) {
+              aiStreaming = busy;
+              document.getElementById('ai-loading')?.classList.toggle('hidden', !busy);
+            }
+
+            function currentAIContext() {
+              var context = {};
+              var profileForm = document.querySelector('form[action="/dashboard/profile"]');
+              if (profileForm) {
+                var names = ['display_name', 'headline', 'bio', 'location', 'website', 'pronouns'];
+                for (var i = 0; i < names.length; i++) {
+                  var field = profileForm.querySelector('[name="' + names[i] + '"]');
+                  if (field) context[names[i]] = field.value;
+                }
+              }
+
+              var fields = [];
+              var fieldsForm = document.querySelector('form[action="/dashboard/fields"]');
+              if (fieldsForm) {
+                var labels = fieldsForm.querySelectorAll('[data-repeater-row] input[name="label"]');
+                var values = fieldsForm.querySelectorAll('[data-repeater-row] input[name="value"]');
+                for (var j = 0; j < labels.length; j++) {
+                  fields.push({ label: labels[j].value, value: values[j] ? values[j].value : '' });
+                }
+              }
+              context.fields = fields;
+
+              var tags = [];
+              var tagsForm = document.querySelector('form[action="/dashboard/tags"]');
+              if (tagsForm) {
+                var rows = tagsForm.querySelectorAll('[data-repeater-row]');
+                for (var k = 0; k < rows.length; k++) {
+                  var tagInput = rows[k].querySelector('input[name="tag"]');
+                  var select = rows[k].querySelector('select[name="category_id"]');
+                  var option = select && select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+                  tags.push({
+                    value: tagInput ? tagInput.value : '',
+                    category: option ? option.textContent : '',
+                  });
+                }
+              }
+              context.tags = tags;
+
+              return context;
+            }
+
+            function sendAIMessage() {
+              if (aiStreaming) return;
+              var input = document.getElementById('ai-input');
+              var text = input ? input.value.trim() : '';
+              if (!text) return;
+              if (input) input.value = '';
+              var error = document.getElementById('ai-error');
+              error?.classList.add('hidden');
+
+              aiHistory.push({ role: 'user', content: text });
+              addBubble('user', text);
+
+              var bubble = addBubble('assistant', '');
+              setAIBusy(true);
+
+              var answer = '';
+              var firstChunk = true;
+              fetch('/dashboard/ai/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                  _csrf: AI_CSRF,
+                  messages: JSON.stringify(aiHistory.slice(-20)),
+                  profile: JSON.stringify(currentAIContext()),
+                }),
+              })
+                .then(function (response) {
+                  if (!response.ok || !response.body) {
+                    return response
+                      .json()
+                      .catch(function () {
+                        return {};
+                      })
+                      .then(function (data) {
+                        throw new Error((data && data.error) || AI_LABELS.error);
+                      });
+                  }
+
+                  var reader = response.body.getReader();
+                  var decoder = new TextDecoder();
+                  var buffer = '';
+
+                  function handleEvent(part) {
+                    var line = part.trim();
+                    if (line.slice(0, 5) !== 'data:') return;
+                    var payload = line.slice(5).trim();
+                    if (!payload) return;
+                    var event;
+                    try {
+                      event = JSON.parse(payload);
+                    } catch (e) {
+                      return;
+                    }
+                    if (event.delta) {
+                      if (firstChunk) {
+                        firstChunk = false;
+                        document.getElementById('ai-loading')?.classList.add('hidden');
+                      }
+                      answer += event.delta;
+                      bubble.textContent = answer;
+                      var list = document.getElementById('ai-messages');
+                      if (list) list.scrollTop = list.scrollHeight;
+                    } else if (event.error) {
+                      throw new Error(event.error);
+                    }
+                  }
+
+                  function pump() {
+                    return reader.read().then(function (result) {
+                      if (result.done) {
+                        if (answer) aiHistory.push({ role: 'assistant', content: answer });
+                        else if (bubble.parentNode) bubble.parentNode.removeChild(bubble);
+                        setAIBusy(false);
+                        return undefined;
+                      }
+                      buffer += decoder.decode(result.value, { stream: true });
+                      var parts = buffer.split('\\n\\n');
+                      buffer = parts.pop() || '';
+                      for (var i = 0; i < parts.length; i++) handleEvent(parts[i]);
+                      return pump();
+                    });
+                  }
+
+                  return pump();
+                })
+                .catch(function (err) {
+                  setAIBusy(false);
+                  if (!answer && bubble.parentNode) bubble.parentNode.removeChild(bubble);
+                  if (error) {
+                    error.textContent = (err && err.message) || AI_LABELS.error;
+                    error.classList.remove('hidden');
+                  }
+                });
+            }
+            
+          `
+        }}
+      />
     </Layout>
   );
 }
@@ -642,3 +976,4 @@ function Select(props: {
     </div>
   );
 }
+

@@ -293,6 +293,31 @@ export const en = {
   'admin.forbidden': 'You do not have access to the admin panel.',
   'auth.err.signupDisabled': 'New sign-ups are currently disabled.',
   'auth.err.magicDisabled': 'Email sign-in is currently disabled.',
+
+  'admin.ai.heading': 'AI Assistant Configuration',
+  'admin.ai.subtitle': 'Configure the AI chat assistant.',
+  'admin.ai.apiKey': 'API Key',
+  'admin.ai.baseUrl': 'Base URL',
+  'admin.ai.baseUrlHint': 'Custom API endpoint (optional).',
+  'admin.ai.model': 'Model',
+  'admin.ai.modelHint': 'Model used for chat completions.',
+  'admin.ai.prompt': 'System Prompt',
+  'admin.ai.promptHint': 'System prompt for the chat assistant.',
+  'admin.ai.test': 'Check Configuration',
+  'admin.ai.testSuccess': 'API key is configured.',
+  'admin.ai.notConfigured': 'No API key configured.',
+
+  'dash.ai.title': 'AI Assistant',
+  'dash.ai.button': 'AI Assistant',
+  'dash.ai.empty': 'Ask the AI for help writing your profile.',
+  'dash.ai.placeholder': 'Ask the AI to help write your profile…',
+  'dash.ai.send': 'Send',
+  'dash.ai.loading': 'AI is thinking...',
+  'dash.ai.error': 'AI request failed. Please try again.',
+  'dash.ai.notConfigured': 'The AI assistant is not configured.',
+  'dash.ai.cancel': 'Cancel',
+  'dash.ai.copy': 'Copy',
+  'dash.ai.copied': 'Copied',
 } as const;
 
 export default en;

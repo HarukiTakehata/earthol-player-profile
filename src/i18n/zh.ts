@@ -293,6 +293,31 @@ export const zh: Record<keyof typeof en, string> = {
   'admin.forbidden': '你没有访问管理后台的权限。',
   'auth.err.signupDisabled': '当前已暂停新注册。',
   'auth.err.magicDisabled': '当前已停用邮箱登录。',
+
+  'admin.ai.heading': 'AI 助手配置',
+  'admin.ai.subtitle': '配置 AI 对话助手。',
+  'admin.ai.apiKey': 'API 密钥',
+  'admin.ai.baseUrl': '基础 URL',
+  'admin.ai.baseUrlHint': '自定义 API 端点（可选）。',
+  'admin.ai.model': '模型',
+  'admin.ai.modelHint': '用于对话补全的模型。',
+  'admin.ai.prompt': 'System 提示词',
+  'admin.ai.promptHint': '对话助手的系统提示词。',
+  'admin.ai.test': '检查配置',
+  'admin.ai.testSuccess': 'API 密钥已配置。',
+  'admin.ai.notConfigured': '未配置 API 密钥。',
+
+  'dash.ai.title': 'AI 助手',
+  'dash.ai.button': 'AI 助手',
+  'dash.ai.empty': '让 AI 帮你撰写个人资料。',
+  'dash.ai.placeholder': '让 AI 帮你撰写个人资料……',
+  'dash.ai.send': '发送',
+  'dash.ai.loading': 'AI 正在思考...',
+  'dash.ai.error': 'AI 请求失败，请重试。',
+  'dash.ai.notConfigured': 'AI 助手尚未配置。',
+  'dash.ai.cancel': '取消',
+  'dash.ai.copy': '复制',
+  'dash.ai.copied': '已复制',
 };
 
 export default zh;
