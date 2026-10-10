@@ -4,7 +4,7 @@ import type { TagCategoryRow, UserRow } from '../db/types';
 import { TAG_COLORS, tagChipClasses } from '../lib/tags';
 import { THEMES, VISIBILITIES } from '../lib/themes';
 import type { AdminStats } from '../db/queries';
-import type { SiteSettings } from '../lib/settings';
+import { MAX_LANDING_COPY, MAX_LANDING_URL, type LandingCopyKey, type SiteSettings } from '../lib/settings';
 import type { EnvLocks } from '../lib/config';
 import type { Locale, MessageKey, TranslateFn } from '../i18n';
 
@@ -562,6 +562,149 @@ export function AdminView({
         </form>
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: codeMirrorScript(t) }} />
 
+        <form method="post" action="/admin/landing" class="card p-6">
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <div class="mb-5">
+            <h2 class="text-lg font-bold tracking-tight">{t('admin.landing.heading')}</h2>
+            <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.landing.desc')}</p>
+          </div>
+
+          <div class="space-y-4">
+            <LandingField
+              name="badge"
+              label={t('admin.landing.badge')}
+              value={settings.landingCopy.badge}
+              placeholder={t('home.badge')}
+            />
+            <div class="grid gap-4 sm:grid-cols-3">
+              <LandingField
+                name="heroLead"
+                label={t('admin.landing.heroLead')}
+                value={settings.landingCopy.heroLead}
+                placeholder={t('home.heroLead')}
+              />
+              <LandingField
+                name="heroAccent"
+                label={t('admin.landing.heroAccent')}
+                value={settings.landingCopy.heroAccent}
+                placeholder={t('home.heroAccent')}
+              />
+              <LandingField
+                name="heroTail"
+                label={t('admin.landing.heroTail')}
+                value={settings.landingCopy.heroTail}
+                placeholder={t('home.heroTail')}
+              />
+            </div>
+            <LandingField
+              name="subtitle"
+              label={t('admin.landing.subtitle')}
+              value={settings.landingCopy.subtitle}
+              placeholder={t('home.subtitle')}
+              multiline
+            />
+            <div class="grid gap-4 sm:grid-cols-2">
+              <LandingField
+                name="ctaClaim"
+                label={t('admin.landing.ctaClaim')}
+                value={settings.landingCopy.ctaClaim}
+                placeholder={t('home.ctaClaim')}
+              />
+              <LandingField
+                name="ctaHow"
+                label={t('admin.landing.ctaHow')}
+                value={settings.landingCopy.ctaHow}
+                placeholder={t('home.ctaHow')}
+              />
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="label" for="landing_ctaClaimUrl">
+                  {t('admin.landing.ctaClaimUrl')}
+                </label>
+                <input
+                  id="landing_ctaClaimUrl"
+                  name="ctaClaimUrl"
+                  value={settings.landingCtaPrimaryUrl}
+                  maxlength={MAX_LANDING_URL}
+                  placeholder="/login"
+                  class="field"
+                />
+              </div>
+              <div>
+                <label class="label" for="landing_ctaHowUrl">
+                  {t('admin.landing.ctaHowUrl')}
+                </label>
+                <input
+                  id="landing_ctaHowUrl"
+                  name="ctaHowUrl"
+                  value={settings.landingCtaSecondaryUrl}
+                  maxlength={MAX_LANDING_URL}
+                  placeholder="#how"
+                  class="field"
+                />
+              </div>
+            </div>
+            <p class="px-1 text-xs text-muted-foreground">{t('admin.landing.linkHint')}</p>
+          </div>
+
+          <div class="mt-6 space-y-4">
+            <div class="space-y-3 rounded-2xl border border-border bg-muted/40 p-4">
+              <LandingField
+                name="step1Title"
+                label={t('admin.landing.step1Title')}
+                value={settings.landingCopy.step1Title}
+                placeholder={t('home.step1Title')}
+              />
+              <LandingField
+                name="step1Body"
+                label={t('admin.landing.step1Body')}
+                value={settings.landingCopy.step1Body}
+                placeholder={t('home.step1Body')}
+                multiline
+              />
+            </div>
+            <div class="space-y-3 rounded-2xl border border-border bg-muted/40 p-4">
+              <LandingField
+                name="step2Title"
+                label={t('admin.landing.step2Title')}
+                value={settings.landingCopy.step2Title}
+                placeholder={t('home.step2Title')}
+              />
+              <LandingField
+                name="step2Body"
+                label={t('admin.landing.step2Body')}
+                value={settings.landingCopy.step2Body}
+                placeholder={t('home.step2Body')}
+                multiline
+              />
+            </div>
+            <div class="space-y-3 rounded-2xl border border-border bg-muted/40 p-4">
+              <LandingField
+                name="step3Title"
+                label={t('admin.landing.step3Title')}
+                value={settings.landingCopy.step3Title}
+                placeholder={t('home.step3Title')}
+              />
+              <LandingField
+                name="step3Body"
+                label={t('admin.landing.step3Body')}
+                value={settings.landingCopy.step3Body}
+                placeholder={t('home.step3Body')}
+                multiline
+              />
+            </div>
+          </div>
+
+          <p class="mt-4 px-1 text-xs text-muted-foreground">{t('admin.landing.hint')}</p>
+          <div class="mt-4 flex justify-end">
+            <button type="submit" class="btn-primary">
+              {t('admin.landing.save')}
+            </button>
+          </div>
+        </form>
+
         <div class="card p-6">
           <div class="mb-5">
             <h2 class="text-lg font-bold tracking-tight">{t('admin.reserved.heading')}</h2>
@@ -822,6 +965,47 @@ export function AdminView({
         </div>
       </section>
     </Layout>
+  );
+}
+
+/**
+ * A single landing-page copy input. `name` doubles as the form field name (the
+ * `POST /admin/landing` handler reads it back by the same key) and the `home.*`
+ * message it overrides; the built-in text is passed in as the placeholder.
+ */
+function LandingField(props: {
+  name: LandingCopyKey;
+  label: string;
+  value: string;
+  placeholder: string;
+  multiline?: boolean;
+}) {
+  const id = `landing_${props.name}`;
+  return (
+    <div>
+      <label class="label" for={id}>
+        {props.label}
+      </label>
+      {props.multiline ? (
+        <textarea
+          id={id}
+          name={props.name}
+          rows={3}
+          maxlength={MAX_LANDING_COPY}
+          placeholder={props.placeholder}
+          class="field w-full rounded-2xl"
+        >{props.value}</textarea>
+      ) : (
+        <input
+          id={id}
+          name={props.name}
+          value={props.value}
+          maxlength={MAX_LANDING_COPY}
+          placeholder={props.placeholder}
+          class="field"
+        />
+      )}
+    </div>
   );
 }
 

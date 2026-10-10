@@ -33,7 +33,14 @@ publicRoutes.get('/', (c) => {
       pathname="/"
       isAdmin={c.get('isAdmin')}
     >
-      <Home appName={c.get('appName')} t={t} loggedIn={Boolean(c.get('user'))} />
+      <Home
+        appName={c.get('appName')}
+        t={t}
+        copy={c.get('settings').landingCopy}
+        ctaPrimaryUrl={c.get('settings').landingCtaPrimaryUrl}
+        ctaSecondaryUrl={c.get('settings').landingCtaSecondaryUrl}
+        loggedIn={Boolean(c.get('user'))}
+      />
     </Layout>,
   );
 });

@@ -13,7 +13,7 @@ import { AdminView } from '../views/admin';
 import { requireAdmin } from '../middleware/auth';
 import { navUser } from '../lib/view';
 import { envAdminEmails } from '../lib/admin';
-import { saveSettings } from '../lib/settings';
+import { LANDING_COPY_KEYS, MAX_LANDING_COPY, MAX_LANDING_URL, saveSettings } from '../lib/settings';
 import {
   addReservedUsername,
   createTagCategory,
@@ -33,7 +33,7 @@ import {
 import { invalidateAllProfiles, invalidateProfiles } from '../lib/profile-cache';
 import { isTagColor } from '../lib/tags';
 import { isTheme, isVisibility } from '../lib/themes';
-import { isSafeFaviconUrl, isSafeUrl, text } from '../lib/validate';
+import { isSafeFaviconUrl, isSafeLandingUrl, isSafeUrl, text } from '../lib/validate';
 import {
   envLocks,
   resolveGithub,
@@ -52,6 +52,7 @@ const SAVED_MESSAGES: Record<string, MessageKey> = {
   settings: 'admin.saved.settings',
   reserved: 'admin.saved.reserved',
   code: 'admin.saved.code',
+  landing: 'admin.saved.landing',
   tags: 'admin.saved.tags',
   user: 'admin.saved.user',
   deleted: 'admin.saved.deleted',
@@ -176,6 +177,9 @@ adminRoutes.post('/admin/settings', async (c) => {
     defaultTheme: isTheme(theme) ? theme : current.defaultTheme,
     defaultVisibility: isVisibility(visibility) ? visibility : current.defaultVisibility,
     // This form has no code or integration fields; keep the existing values.
+    landingCopy: current.landingCopy,
+    landingCtaPrimaryUrl: current.landingCtaPrimaryUrl,
+    landingCtaSecondaryUrl: current.landingCtaSecondaryUrl,
     customCss: current.customCss,
     customJs: current.customJs,
     customFooter: current.customFooter,
@@ -301,6 +305,36 @@ adminRoutes.post('/admin/custom-code', async (c) => {
   }
 
   return c.redirect('/admin?saved=code');
+});
+
+// Landing page copy + CTA link overrides. Each copy field maps to a `home.*`
+// i18n message; a blank value falls back to the built-in text for the viewer's
+// locale. A blank CTA link restores the built-in button behavior; a non-empty
+// but unsafe one keeps the current link (same rule as the favicon). The home
+// page is never KV-cached, so no profile-cache purge is needed on save.
+adminRoutes.post('/admin/landing', async (c) => {
+  const current = c.get('settings');
+  const body = await c.req.parseBody();
+  const landingCopy = { ...current.landingCopy };
+  for (const key of LANDING_COPY_KEYS) {
+    landingCopy[key] = text(body[key], MAX_LANDING_COPY);
+  }
+
+  const resolveUrl = (raw: unknown, fallback: string): string => {
+    const value = text(raw, MAX_LANDING_URL);
+    if (!value) return '';
+    return isSafeLandingUrl(value) ? value : fallback;
+  };
+  const landingCtaPrimaryUrl = resolveUrl(body.ctaClaimUrl, current.landingCtaPrimaryUrl);
+  const landingCtaSecondaryUrl = resolveUrl(body.ctaHowUrl, current.landingCtaSecondaryUrl);
+
+  await saveSettings(c.env, {
+    ...current,
+    landingCopy,
+    landingCtaPrimaryUrl,
+    landingCtaSecondaryUrl,
+  });
+  return c.redirect('/admin?saved=landing');
 });
 
 adminRoutes.post('/admin/reserved/add', async (c) => {
