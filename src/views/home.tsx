@@ -1,43 +1,57 @@
-/** Marketing landing page for signed-out visitors (a shortcut for users). */
-import type { TranslateFn } from '../i18n';
+/** Landing page for signed-out visitors (a shortcut for users). */
+import type { MessageKey, TranslateFn } from '../i18n';
+import type { LandingCopy, LandingCopyKey } from '../lib/settings';
 
 export interface HomeProps {
   appName: string;
   t: TranslateFn;
+  copy: LandingCopy;
+  ctaPrimaryUrl: string;
+  ctaSecondaryUrl: string;
   loggedIn?: boolean;
 }
 
-export function Home({ appName, t, loggedIn }: HomeProps) {
+export function Home({ appName, t, copy, ctaPrimaryUrl, ctaSecondaryUrl, loggedIn }: HomeProps) {
+  // Admin overrides win over the built-in copy; a blank field falls back to the
+  // translated `home.*` message for the current locale.
+  const at = (key: LandingCopyKey) => copy[key].trim() || t(`home.${key}` as MessageKey);
+  const subtitle = at('subtitle').replaceAll('{appName}', appName);
+  // Button targets: a configured link wins; blank restores the default behavior
+  // (primary → /login, or /dashboard when signed in; secondary → #how).
+  const primaryUrl = ctaPrimaryUrl.trim();
+  const primaryHref = primaryUrl || (loggedIn ? '/dashboard' : '/login');
+  const primaryLabel = loggedIn && !primaryUrl ? t('nav.dashboard') : at('ctaClaim');
+  const secondaryHref = ctaSecondaryUrl.trim() || '#how';
   const steps = [
-    { title: t('home.step1Title'), body: t('home.step1Body') },
-    { title: t('home.step2Title'), body: t('home.step2Body') },
-    { title: t('home.step3Title'), body: t('home.step3Body') },
+    { title: at('step1Title'), body: at('step1Body') },
+    { title: at('step2Title'), body: at('step2Body') },
+    { title: at('step3Title'), body: at('step3Body') },
   ];
 
   return (
     <section class="flex flex-col items-start gap-10 py-6">
       <span class="chip border border-primary/30 bg-primary/10 text-primary">
         <span class="h-1.5 w-1.5 rounded-full bg-primary" />
-        {t('home.badge')}
+        {at('badge')}
       </span>
 
       <div class="space-y-5">
         <h1 class="max-w-3xl text-4xl font-bold leading-[1.1] tracking-tight sm:text-6xl">
-          {t('home.heroLead')}
+          {at('heroLead')}
           <span class="bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-            {t('home.heroAccent')}
+            {at('heroAccent')}
           </span>
-          {t('home.heroTail')}
+          {at('heroTail')}
         </h1>
-        <p class="max-w-2xl text-lg text-muted-foreground">{t('home.subtitle', { appName })}</p>
+        <p class="max-w-2xl text-lg text-muted-foreground">{subtitle}</p>
       </div>
 
       <div class="flex flex-wrap gap-3">
-        <a href={loggedIn ? '/dashboard' : '/login'} class="btn-primary px-6 py-3 text-base">
-          {loggedIn ? t('nav.dashboard') : t('home.ctaClaim')}
+        <a href={primaryHref} class="btn-primary px-6 py-3 text-base">
+          {primaryLabel}
         </a>
-        <a href="#how" class="btn-outline px-6 py-3 text-base">
-          {t('home.ctaHow')}
+        <a href={secondaryHref} class="btn-outline px-6 py-3 text-base">
+          {at('ctaHow')}
         </a>
       </div>
 

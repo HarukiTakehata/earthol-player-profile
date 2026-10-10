@@ -7,8 +7,70 @@ import type { Env } from '../types';
 import { readSettings, writeSettings } from '../db/queries';
 import { appName } from './env';
 
+/**
+ * Admin-editable overrides for the landing page (`/`) copy. Each key maps 1:1
+ * to a `home.*` i18n message. An empty value means "use the built-in text for
+ * the current locale", so overrides are opt-in per field and per site.
+ */
+export const LANDING_COPY_KEYS = [
+  'badge',
+  'heroLead',
+  'heroAccent',
+  'heroTail',
+  'subtitle',
+  'ctaClaim',
+  'ctaHow',
+  'step1Title',
+  'step1Body',
+  'step2Title',
+  'step2Body',
+  'step3Title',
+  'step3Body',
+] as const;
+
+export type LandingCopyKey = (typeof LANDING_COPY_KEYS)[number];
+export type LandingCopy = Record<LandingCopyKey, string>;
+
+export const MAX_LANDING_COPY = 300;
+export const MAX_LANDING_URL = 500;
+
+const DEFAULT_LANDING_COPY: LandingCopy = {
+  badge: '',
+  heroLead: '',
+  heroAccent: '',
+  heroTail: '',
+  subtitle: '',
+  ctaClaim: '',
+  ctaHow: '',
+  step1Title: '',
+  step1Body: '',
+  step2Title: '',
+  step2Body: '',
+  step3Title: '',
+  step3Body: '',
+};
+
+/** Parses the stored JSON blob, ignoring unknown keys and malformed input. */
+function parseLandingCopy(raw: string | undefined): LandingCopy {
+  const copy = { ...DEFAULT_LANDING_COPY };
+  if (!raw) return copy;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const key of LANDING_COPY_KEYS) {
+      const value = parsed[key];
+      if (typeof value === 'string') copy[key] = value.slice(0, MAX_LANDING_COPY);
+    }
+  } catch {
+    /* malformed JSON falls back to all-defaults */
+  }
+  return copy;
+}
+
 export interface SiteSettings {
   siteName: string;
+  landingCopy: LandingCopy;
+  landingCtaPrimaryUrl: string;
+  landingCtaSecondaryUrl: string;
   faviconUrl: string;
   logoUrl: string;
   signupsEnabled: boolean;
@@ -42,6 +104,9 @@ const CACHE_TTL = 60;
 
 const KEY = {
   siteName: 'site_name',
+  landing: 'landing_copy',
+  landingCtaPrimaryUrl: 'landing_cta_primary_url',
+  landingCtaSecondaryUrl: 'landing_cta_secondary_url',
   faviconUrl: 'favicon_url',
   logoUrl: 'logo_url',
   signups: 'signups_enabled',
@@ -72,6 +137,9 @@ const KEY = {
 
 const DEFAULTS: SiteSettings = {
   siteName: '',
+  landingCopy: { ...DEFAULT_LANDING_COPY },
+  landingCtaPrimaryUrl: '',
+  landingCtaSecondaryUrl: '',
   faviconUrl: '',
   logoUrl: '',
   signupsEnabled: true,
@@ -126,6 +194,9 @@ export async function getSettings(env: Env): Promise<SiteSettings> {
 
   const settings: SiteSettings = {
     siteName: map[KEY.siteName] ?? '',
+    landingCopy: parseLandingCopy(map[KEY.landing]),
+    landingCtaPrimaryUrl: map[KEY.landingCtaPrimaryUrl] ?? '',
+    landingCtaSecondaryUrl: map[KEY.landingCtaSecondaryUrl] ?? '',
     faviconUrl: map[KEY.faviconUrl] ?? DEFAULTS.faviconUrl,
     logoUrl: map[KEY.logoUrl] ?? DEFAULTS.logoUrl,
     signupsEnabled: toBool(map[KEY.signups], DEFAULTS.signupsEnabled),
@@ -167,6 +238,9 @@ export async function getSettings(env: Env): Promise<SiteSettings> {
 export async function saveSettings(env: Env, settings: SiteSettings): Promise<void> {
   await writeSettings(env.DB, {
     [KEY.siteName]: settings.siteName,
+    [KEY.landing]: JSON.stringify(settings.landingCopy),
+    [KEY.landingCtaPrimaryUrl]: settings.landingCtaPrimaryUrl,
+    [KEY.landingCtaSecondaryUrl]: settings.landingCtaSecondaryUrl,
     [KEY.faviconUrl]: settings.faviconUrl,
     [KEY.logoUrl]: settings.logoUrl,
     [KEY.signups]: settings.signupsEnabled ? '1' : '0',

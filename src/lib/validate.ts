@@ -58,6 +58,18 @@ export function isSafeFaviconUrl(value: string): boolean {
   return isSafeUrl(trimmed);
 }
 
+/**
+ * Landing-page CTA targets: an absolute http(s) URL, a same-origin
+ * root-relative path (`/path`), or an in-page fragment (`#how`). Blocks
+ * `javascript:`/`data:` schemes and protocol-relative `//host` links.
+ */
+export function isSafeLandingUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('#')) return trimmed.length > 1;
+  if (trimmed.startsWith('/')) return !trimmed.startsWith('//');
+  return isSafeUrl(trimmed);
+}
+
 export function text(value: unknown, maxLength: number): string {
   const str = typeof value === 'string' ? value.trim() : '';
   return str.slice(0, maxLength);
