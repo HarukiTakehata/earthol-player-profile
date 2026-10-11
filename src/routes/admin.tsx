@@ -31,6 +31,7 @@ import {
   updateTagCategory,
 } from '../db/queries';
 import { invalidateAllProfiles, invalidateProfiles } from '../lib/profile-cache';
+import { deleteStoredImage } from '../lib/storage';
 import { isTagColor } from '../lib/tags';
 import { isTheme, isVisibility } from '../lib/themes';
 import { isSafeFaviconUrl, isSafeLandingUrl, isSafeUrl, text } from '../lib/validate';
@@ -434,6 +435,10 @@ adminRoutes.post('/admin/users/:id/delete', async (c) => {
   if (id === current.id) return c.redirect('/admin?err=self');
 
   const deleted = await deleteUser(c.env.DB, id);
-  if (deleted) await invalidateProfiles(c.env.KV, [deleted.username]);
+  if (deleted) {
+    // Best-effort removal of the user's uploaded avatar, if any.
+    await deleteStoredImage(c.env, deleted.avatar_url);
+    await invalidateProfiles(c.env.KV, [deleted.username]);
+  }
   return c.redirect('/admin?saved=deleted');
 });

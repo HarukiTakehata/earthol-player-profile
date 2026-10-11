@@ -23,6 +23,17 @@
       "binding": "KV"
     }
   ],
+  // Optional R2 object storage: uncomment to enable avatar uploads in the
+  // dashboard. The code detects the binding at runtime and hides/disables the
+  // upload feature when it is absent, so leaving this commented keeps the app
+  // fully functional without R2. `bucket_name` may be any name — Wrangler
+  // auto-provisions it (locally and on deploy), or point it at an existing one.
+  // "r2_buckets": [
+  //   {
+  //     "binding": "R2",
+  //     "bucket_name": "earthol-player-profile-r2"
+  //   }
+  // ],
   "env": {
     "production": {
       "name": "earthol-player-profile-production",
@@ -36,7 +47,15 @@
         {
           "binding": "KV"
         }
-      ]
+      ],
+      // Uncomment together with the top-level block to enable avatar uploads
+      // in production (same notes as above).
+      // "r2_buckets": [
+      //   {
+      //     "binding": "R2",
+      //     "bucket_name": "earthol-player-profile-r2"
+      //   }
+      // ]
     }
   }
 }

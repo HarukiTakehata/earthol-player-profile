@@ -3,6 +3,7 @@ import { Layout } from './layout';
 import type { FieldRow, IdentityRow, TagCategoryRow, UserRow, UserTagRow } from '../db/types';
 import { THEMES, VISIBILITIES } from '../lib/themes';
 import { tagChipClasses } from '../lib/tags';
+import { MAX_AVATAR_BYTES } from '../lib/storage';
 import type { Locale, MessageKey, TranslateFn } from '../i18n';
 
 export interface DashboardProps {
@@ -15,6 +16,8 @@ export interface DashboardProps {
   csrfToken: string;
   user: UserRow;
   gravatarUrl: string;
+  /** R2 avatar uploads are only offered when the bucket binding exists. */
+  uploadEnabled: boolean;
   fields: FieldRow[];
   tags: UserTagRow[];
   tagCategories: TagCategoryRow[];
@@ -40,6 +43,7 @@ export function Dashboard({
   csrfToken,
   user,
   gravatarUrl,
+  uploadEnabled,
   fields,
   tags,
   tagCategories,
@@ -234,6 +238,42 @@ export function Dashboard({
             </button>
           </div>
         </form>
+
+        {uploadEnabled ? (
+          <form
+            method="post"
+            action="/dashboard/avatar/upload"
+            encType="multipart/form-data"
+            class="card p-6"
+          >
+            <input type="hidden" name="_csrf" value={csrfToken} />
+
+            <div class="mb-5">
+              <h2 class="text-lg font-bold tracking-tight">{t('dash.upload.heading')}</h2>
+              <p class="mt-0.5 text-sm text-muted-foreground">{t('dash.upload.subtitle')}</p>
+            </div>
+
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                type="file"
+                name="file"
+                required
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                class="field min-w-0 flex-1 file:mr-3 file:cursor-pointer file:rounded-full file:border-0 file:bg-muted file:px-3 file:py-1 file:text-xs file:font-semibold file:text-foreground"
+              />
+              <button type="submit" class="btn-primary shrink-0">
+                <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                  upload
+                </span>
+                {t('dash.upload.submit')}
+              </button>
+            </div>
+
+            <p class="mt-1.5 text-xs text-muted-foreground">
+              {t('dash.upload.hint', { max: String(MAX_AVATAR_BYTES / (1024 * 1024)) })}
+            </p>
+          </form>
+        ) : null}
 
         <section class="card p-6">
           <div class="mb-5">

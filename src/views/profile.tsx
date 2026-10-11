@@ -76,6 +76,13 @@ export function Profile({
     user.headline ||
     t('profile.defaultDescription', { username: user.username ?? '', appName });
   const shareUrl = canonical ?? '';
+  // og:image must be an absolute URL; uploaded avatars are same-origin paths.
+  const ogImage =
+    user.avatar_url && user.avatar_url.startsWith('/')
+      ? canonical
+        ? `${new URL(canonical).origin}${user.avatar_url}`
+        : undefined
+      : user.avatar_url;
 
   return (
     <Layout
@@ -100,7 +107,7 @@ export function Profile({
         title: `${name} (@${user.username})`,
         description,
         url: canonical ?? '',
-        image: user.avatar_url,
+        image: ogImage,
         type: 'profile',
       }}
     >

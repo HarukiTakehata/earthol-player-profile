@@ -29,6 +29,13 @@ import { DEFAULT_CHAT_PROMPT, resolveOpenAI } from '../lib/openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { isTheme, isVisibility } from '../lib/themes';
 import {
+  deleteStoredImage,
+  isStoredPath,
+  MAX_AVATAR_BYTES,
+  storageEnabled,
+  storeImage,
+} from '../lib/storage';
+import {
   isSafeUrl,
   isValidEmail,
   isValidUsername,
@@ -90,6 +97,17 @@ function errorMessage(code: string | undefined, t: TranslateFn): string | undefi
       return t('dash.err.emailTaken');
     case 'link_failed':
       return t('dash.err.linkFailed');
+    case 'storage_unavailable':
+    case 'unavailable':
+      return t('dash.err.storageUnavailable');
+    case 'invalid_file':
+      return t('dash.err.invalidFile');
+    case 'file_too_large':
+      return t('dash.err.fileTooLarge', {
+        max: String(MAX_AVATAR_BYTES / (1024 * 1024)),
+      });
+    case 'invalid_file_type':
+      return t('dash.err.invalidFileType');
     default:
       return undefined;
   }
@@ -133,7 +151,9 @@ dashboardRoutes.get('/dashboard', async (c) => {
               ? t('dash.saved.emailLinked')
               : saved === 'email_sent'
                 ? t('dash.saved.emailSent')
-                : undefined;
+                : saved === 'avatar'
+                  ? t('dash.savedAvatar')
+                  : undefined;
 
   return c.html(
     <Dashboard
@@ -146,6 +166,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
       csrfToken={c.get('csrfToken')}
       user={user}
       gravatarUrl={await gravatarAvatarUrl(user.email, resolveGravatarMirror(c.env, settings))}
+      uploadEnabled={storageEnabled(c.env)}
       fields={fields}
       tags={tags}
       tagCategories={tagCategories}
@@ -178,7 +199,11 @@ dashboardRoutes.post('/dashboard/profile', async (c) => {
 
   const websiteRaw = text(body.website, 300);
   const avatarRaw = text(body.avatar_url, 500);
-  if ((websiteRaw && !isSafeUrl(websiteRaw)) || (avatarRaw && !isSafeUrl(avatarRaw))) {
+  // Uploaded avatars are same-origin `/files/...` paths, not http(s) URLs.
+  if (
+    (websiteRaw && !isSafeUrl(websiteRaw)) ||
+    (avatarRaw && !isSafeUrl(avatarRaw) && !isStoredPath(avatarRaw))
+  ) {
     return c.redirect('/dashboard?error=invalid_url');
   }
 
@@ -186,13 +211,19 @@ dashboardRoutes.post('/dashboard/profile', async (c) => {
   const visibility = text(body.visibility, 30);
 
   const previousUsername = user.username;
+  const newAvatarUrl = avatarRaw || null;
+
+  // Clearing or replacing an uploaded avatar deletes the old stored object.
+  if (isStoredPath(user.avatar_url) && user.avatar_url !== newAvatarUrl) {
+    await deleteStoredImage(c.env, user.avatar_url);
+  }
 
   await updateProfile(c.env.DB, user.id, {
     username,
     displayName: text(body.display_name, 80) || null,
     headline: text(body.headline, 120) || null,
     bio: text(body.bio, 1000) || null,
-    avatarUrl: avatarRaw || null,
+    avatarUrl: newAvatarUrl,
     location: text(body.location, 120) || null,
     website: websiteRaw || null,
     pronouns: text(body.pronouns, 40) || null,
@@ -203,6 +234,56 @@ dashboardRoutes.post('/dashboard/profile', async (c) => {
   await invalidateProfiles(c.env.KV, [previousUsername, username]);
 
   return c.redirect('/dashboard?saved=profile');
+});
+
+/**
+ * Uploads an avatar into the optional R2 binding and points the profile at
+ * it. Only rendered when the binding exists (`storageEnabled`); stored under
+ * `avatars/<userId>/<random>.<ext>` and served back via `/files/*`.
+ */
+dashboardRoutes.post('/dashboard/avatar/upload', async (c) => {
+  const user = c.get('user')!;
+  if (!storageEnabled(c.env)) return c.redirect('/dashboard?error=storage_unavailable');
+  if (!user.username) return c.redirect('/onboarding');
+
+  const ip = clientIp(c.req.raw.headers);
+  const [ipLimit, userLimit] = await Promise.all([
+    rateLimit(c.env.KV, `upload:ip:${ip}`, 20, 3600),
+    rateLimit(c.env.KV, `upload:user:${user.id}`, 20, 3600),
+  ]);
+  if (!ipLimit.allowed || !userLimit.allowed) {
+    return c.redirect('/dashboard?error=rate_limited');
+  }
+
+  const body = await c.req.parseBody();
+  const result = await storeImage(c.env, {
+    ownerId: user.id,
+    file: body.file,
+    maxBytes: MAX_AVATAR_BYTES,
+  });
+  if ('error' in result) return c.redirect(`/dashboard?error=${result.error}`);
+
+  // Best-effort cleanup of the upload this one replaces.
+  if (isStoredPath(user.avatar_url) && user.avatar_url !== result.path) {
+    await deleteStoredImage(c.env, user.avatar_url);
+  }
+
+  // Re-save the stored profile with only the avatar changed.
+  await updateProfile(c.env.DB, user.id, {
+    username: user.username,
+    displayName: user.display_name,
+    headline: user.headline,
+    bio: user.bio,
+    avatarUrl: result.path,
+    location: user.location,
+    website: user.website,
+    pronouns: user.pronouns,
+    theme: user.theme,
+    visibility: user.visibility,
+  });
+  await invalidateProfiles(c.env.KV, [user.username]);
+
+  return c.redirect('/dashboard?saved=avatar');
 });
 
 dashboardRoutes.post('/dashboard/fields', async (c) => {

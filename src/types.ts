@@ -10,6 +10,11 @@ export interface Env {
   DB: D1Database;
   KV: KVNamespace;
   ASSETS: Fetcher;
+  /**
+   * Optional R2 bucket. When bound, the dashboard gains avatar uploads served
+   * from `GET /files/*` (see src/lib/storage.ts). Absent = uploads disabled.
+   */
+  R2?: R2Bucket;
 
   APP_NAME?: string;
   APP_URL?: string;

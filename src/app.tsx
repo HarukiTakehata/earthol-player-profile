@@ -14,6 +14,7 @@ import { onboardingRoutes } from './routes/onboarding';
 import { dashboardRoutes } from './routes/dashboard';
 import { adminRoutes } from './routes/admin';
 import { languageRoutes } from './routes/language';
+import { fileRoutes } from './routes/files';
 import { csrfProtection, loadUser } from './middleware/auth';
 import { resolveLocale } from './middleware/locale';
 import { loadRuntime } from './middleware/runtime';
@@ -56,6 +57,8 @@ export function createApp() {
   app.route('/', onboardingRoutes);
   app.route('/', dashboardRoutes);
   app.route('/', adminRoutes);
+  // Top-level prefix (`/files/*`), so it must register before `publicRoutes`.
+  app.route('/', fileRoutes);
   app.route('/', publicRoutes);
 
   app.notFound((c) => {

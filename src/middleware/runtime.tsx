@@ -14,7 +14,8 @@ function isAllowedDuringMaintenance(path: string): boolean {
     path === '/health' ||
     path === '/login' ||
     path.startsWith('/auth/') ||
-    path.startsWith('/language/')
+    path.startsWith('/language/') ||
+    path.startsWith('/files/') // stored objects (e.g. avatars) are passive assets
   );
 }
 
