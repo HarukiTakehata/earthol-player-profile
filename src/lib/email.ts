@@ -144,6 +144,19 @@ class SmtpSession {
   }
 
   upgrade(socket: Socket): void {
+    // `startTls()` closes the original socket: its reader/writer are dead and
+    // the runtime requires fresh streams off the upgraded socket. Release the
+    // old locks first (best effort — the socket is already gone).
+    try {
+      this.reader.releaseLock();
+    } catch {
+      /* original socket already closed by startTls() */
+    }
+    try {
+      this.writer.releaseLock();
+    } catch {
+      /* original socket already closed by startTls() */
+    }
     this.socket = socket;
     this.reader = socket.readable.getReader();
     this.writer = socket.writable.getWriter();
@@ -235,7 +248,10 @@ class SmtpMailer implements Mailer {
         await session.send('STARTTLS');
         await session.reply([220]);
         session.upgrade(socket.startTls({ expectedServerHostname: this.cfg.host }));
-        await session.reply([220]);
+        // RFC 3207: the server does NOT resend its greeting after the TLS
+        // handshake, so there is no second 220 to read here. The client simply
+        // re-issues EHLO on the upgraded stream. Waiting for a greeting that
+        // never arrives deadlocks both sides until the read timeout fires.
         extensions = await this.ehlo(session);
       }
 
