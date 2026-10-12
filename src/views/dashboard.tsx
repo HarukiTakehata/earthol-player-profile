@@ -1,10 +1,25 @@
 /** Console workspace: profile sheet, key/value fields, and tags. */
 import { Layout } from './layout';
-import type { FieldRow, IdentityRow, TagCategoryRow, UserRow, UserTagRow } from '../db/types';
+import type {
+  FieldRow,
+  IdentityRow,
+  TagCategoryRow,
+  TotpFactorRow,
+  UserRow,
+  UserTagRow,
+} from '../db/types';
 import { THEMES, VISIBILITIES } from '../lib/themes';
 import { tagChipClasses } from '../lib/tags';
 import { MAX_AVATAR_BYTES } from '../lib/storage';
 import type { Locale, MessageKey, TranslateFn } from '../i18n';
+
+/**
+ * Renders the otpauth:// provisioning URI as a QR code for a pending TOTP
+ * factor. Lazy-loads `qrcode-generator` from unpkg (already allowed by the
+ * CSP `scriptSrc`) only when such a factor exists on the page.
+ */
+const TOTP_QR_SCRIPT = (s: Record<string, string>) =>
+  `(function(){var S=${JSON.stringify(s)};var box=document.querySelector('[data-totp-qr]');if(!box)return;var uri=box.getAttribute('data-totp-uri')||'';if(!uri)return;function fail(){box.textContent=S.qrFailed;}function ensureQrcode(cb,err){if(typeof qrcode==='function'){cb();return;}var existing=document.querySelector('script[data-totp-qr-lib]');if(existing){existing.addEventListener('load',cb);existing.addEventListener('error',err);return;}var tag=document.createElement('script');tag.src='https://unpkg.com/qrcode-generator@1.4.4/qrcode.js';tag.setAttribute('data-totp-qr-lib','');tag.addEventListener('load',cb);tag.addEventListener('error',err);document.head.appendChild(tag);}ensureQrcode(function(){try{var q=qrcode(0,'M');q.addData(uri);q.make();box.innerHTML=q.createSvgTag({cellSize:5,margin:2,scalable:true});}catch(e){fail();}},fail);})();`;
 
 export interface DashboardProps {
   appName: string;
@@ -24,6 +39,12 @@ export interface DashboardProps {
   identities: IdentityRow[];
   githubEnabled: boolean;
   magicEnabled: boolean;
+  /** TOTP sign-in is enabled site-wide (admin toggle). */
+  totpEnabled: boolean;
+  /** The user's TOTP factor, if any (`confirmed = 0` means setup pending). */
+  totpFactor: TotpFactorRow | null;
+  /** otpauth:// URI, only present while a factor awaits confirmation. */
+  totpUri?: string | null;
   error?: string;
   message?: string;
   nonce?: string;
@@ -50,6 +71,9 @@ export function Dashboard({
   identities,
   githubEnabled,
   magicEnabled,
+  totpEnabled,
+  totpFactor,
+  totpUri,
   error,
   message,
   nonce,
@@ -360,6 +384,115 @@ export function Dashboard({
 
               {!emailIdentity && !magicEnabled ? (
                 <p class="mt-2 text-xs text-muted-foreground">{t('dash.account.notConfigured')}</p>
+              ) : null}
+            </div>
+
+            <div class="rounded-2xl bg-muted px-4 py-3">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex min-w-0 items-center gap-3">
+                  <span class="material-symbols-outlined text-muted-foreground" aria-hidden="true">
+                    security
+                  </span>
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold">{t('dash.account.totp')}</p>
+                    <p class="truncate text-xs text-muted-foreground">
+                      {totpFactor
+                        ? totpFactor.confirmed
+                          ? t('dash.account.connected')
+                          : t('dash.account.totpPending')
+                        : t('dash.account.notConnected')}
+                    </p>
+                  </div>
+                </div>
+                {totpFactor?.confirmed ? (
+                  <span class="rounded-full bg-success/10 px-3 py-1 text-xs font-semibold text-success ring-1 ring-inset ring-success/25">
+                    {t('dash.account.connected')}
+                  </span>
+                ) : null}
+              </div>
+
+              {totpFactor && !totpFactor.confirmed ? (
+                <div class="mt-4 space-y-3">
+                  <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
+                    <div
+                      data-totp-qr
+                      data-totp-uri={totpUri ?? ''}
+                      class="grid h-44 w-44 shrink-0 place-items-center overflow-hidden rounded-2xl bg-card p-2 text-center text-xs text-muted-foreground [&_svg]:h-full [&_svg]:w-full"
+                    />
+                    <div class="min-w-0 space-y-2">
+                      <p class="text-sm text-muted-foreground">{t('dash.account.totpScanHint')}</p>
+                      <p class="text-sm text-muted-foreground">{t('dash.account.totpManualHint')}</p>
+                      <code class="block select-all break-all rounded-xl bg-card px-3 py-2 text-xs tracking-widest">
+                        {totpFactor.secret}
+                      </code>
+                    </div>
+                  </div>
+                  <form method="post" action="/dashboard/totp/confirm" class="flex flex-col gap-2 sm:flex-row">
+                    <input type="hidden" name="_csrf" value={csrfToken} />
+                    <input
+                      type="text"
+                      name="code"
+                      required
+                      inputmode="numeric"
+                      maxlength={9}
+                      autocomplete="one-time-code"
+                      placeholder={t('dash.account.totpCodeLabel')}
+                      aria-label={t('dash.account.totpCodeLabel')}
+                      class="field min-w-0 flex-1"
+                    />
+                    <button type="submit" class="btn-primary shrink-0">
+                      {t('dash.account.totpConfirm')}
+                    </button>
+                    <button type="submit" formaction="/dashboard/totp/setup" class="btn-outline shrink-0">
+                      {t('dash.account.totpRegenerate')}
+                    </button>
+                  </form>
+                </div>
+              ) : null}
+
+              {!totpFactor && totpEnabled ? (
+                <form method="post" action="/dashboard/totp/setup" class="mt-3">
+                  <input type="hidden" name="_csrf" value={csrfToken} />
+                  <button type="submit" class="btn-outline">
+                    <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                      add
+                    </span>
+                    {t('dash.account.totpSetup')}
+                  </button>
+                </form>
+              ) : null}
+
+              {totpFactor?.confirmed ? (
+                <>
+                  <form
+                    method="post"
+                    action="/dashboard/totp/disable"
+                    class="mt-3 flex flex-col gap-2 sm:flex-row"
+                  >
+                    <input type="hidden" name="_csrf" value={csrfToken} />
+                    <input
+                      type="text"
+                      name="code"
+                      required
+                      inputmode="numeric"
+                      maxlength={9}
+                      autocomplete="one-time-code"
+                      placeholder={t('dash.account.totpCodeLabel')}
+                      aria-label={t('dash.account.totpCodeLabel')}
+                      class="field min-w-0 flex-1"
+                    />
+                    <button
+                      type="submit"
+                      class="btn-outline shrink-0 border-danger/30 text-danger hover:bg-danger/10"
+                    >
+                      <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                        delete
+                      </span>
+                      {t('dash.account.totpRemove')}
+                    </button>
+                  </form>
+                  <p class="mt-2 text-xs text-muted-foreground">{t('dash.account.totpRemoveHint')}</p>
+                </>
               ) : null}
             </div>
           </div>
@@ -955,6 +1088,13 @@ export function Dashboard({
             }
             
           `
+        }}
+      />
+
+      <script
+        nonce={nonce}
+        dangerouslySetInnerHTML={{
+          __html: TOTP_QR_SCRIPT({ qrFailed: t('dash.account.totpQrFailed') }),
         }}
       />
     </Layout>

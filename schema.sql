@@ -1,5 +1,7 @@
 -- EarthOL Player Profile · full schema (single version)
 -- Apply with `npm run db:init` (local) or `npm run db:init:remote` (production).
+-- Incremental changes for EXISTING deployments live in `migrations/` — apply
+-- them with `npm run db:migrate` (local) or `npm run db:migrate:remote`.
 
 -- ------------------------------------------------------------------ users
 CREATE TABLE users (
@@ -57,6 +59,18 @@ CREATE TABLE login_tokens (
 );
 
 CREATE INDEX idx_login_tokens_email ON login_tokens (email);
+
+-- One TOTP factor per user (authenticator-app sign-in). A factor only counts
+-- for sign-in once it has been confirmed with a valid code; `last_step` blocks
+-- replaying an already-accepted code.
+CREATE TABLE totp_factors (
+  user_id    TEXT PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+  secret     TEXT NOT NULL,
+  confirmed  INTEGER NOT NULL DEFAULT 0,
+  last_step  INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 
 -- Handles that cannot be claimed because they collide with routes or brands.
 CREATE TABLE reserved_usernames (

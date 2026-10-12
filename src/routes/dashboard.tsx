@@ -9,6 +9,9 @@ import { Dashboard } from '../views/dashboard';
 import type { FieldInput, TagInput } from '../db/types';
 import {
   createLoginToken,
+  confirmTotpFactor,
+  deleteTotpFactor,
+  getTotpFactor,
   getUserByEmail,
   isUsernameReserved,
   isUsernameTakenByOther,
@@ -19,6 +22,7 @@ import {
   replaceFields,
   replaceUserTags,
   updateProfile,
+  upsertPendingTotpFactor,
 } from '../db/queries';
 import { requireAuth } from '../middleware/auth';
 import { invalidateProfiles } from '../lib/profile-cache';
@@ -44,6 +48,7 @@ import {
   text,
 } from '../lib/validate';
 import { randomToken, sha256Hex } from '../lib/crypto';
+import { generateTotpSecret, totpUri, verifyTotp } from '../lib/totp';
 import { getMailer, magicLinkEmail } from '../lib/email';
 import { clientIp, rateLimit } from '../lib/ratelimit';
 import { appUrl } from '../lib/env';
@@ -89,6 +94,10 @@ function errorMessage(code: string | undefined, t: TranslateFn): string | undefi
       return t('auth.err.sendFailed');
     case 'magic_disabled':
       return t('auth.err.magicDisabled');
+    case 'totp_disabled':
+      return t('auth.err.totpDisabled');
+    case 'totp_invalid':
+      return t('auth.err.totpInvalid');
     case 'github_unavailable':
       return t('login.githubUnavailable');
     case 'github_taken':
@@ -131,11 +140,12 @@ dashboardRoutes.get('/dashboard', async (c) => {
 
   const t = c.get('t');
   const settings = c.get('settings');
-  const [fields, tags, tagCategories, identities] = await Promise.all([
+  const [fields, tags, tagCategories, identities, totpFactor] = await Promise.all([
     listFields(c.env.DB, user.id),
     listUserTags(c.env.DB, user.id),
     listTagCategories(c.env.DB),
     listIdentities(c.env.DB, user.id),
+    getTotpFactor(c.env.DB, user.id),
   ]);
   const saved = c.req.query('saved');
   const message =
@@ -151,9 +161,23 @@ dashboardRoutes.get('/dashboard', async (c) => {
               ? t('dash.saved.emailLinked')
               : saved === 'email_sent'
                 ? t('dash.saved.emailSent')
-                : saved === 'avatar'
-                  ? t('dash.savedAvatar')
-                  : undefined;
+                : saved === 'totp_started'
+                  ? t('dash.saved.totpStarted')
+                  : saved === 'totp_enabled'
+                    ? t('dash.saved.totpEnabled')
+                    : saved === 'totp_removed'
+                      ? t('dash.saved.totpRemoved')
+                      : saved === 'avatar'
+                        ? t('dash.savedAvatar')
+                        : undefined;
+
+  // The provisioning URI (with the raw secret) is only exposed while the
+  // factor still awaits confirmation.
+  const totpAccount = user.email ?? user.username ?? user.id;
+  const totpProvisioningUri =
+    totpFactor && !totpFactor.confirmed
+      ? totpUri(totpFactor.secret, totpAccount, c.get('appName'))
+      : null;
 
   return c.html(
     <Dashboard
@@ -173,6 +197,9 @@ dashboardRoutes.get('/dashboard', async (c) => {
       identities={identities}
       githubEnabled={githubConfigured(resolveGithub(c.env, settings)) && settings.githubLoginEnabled}
       magicEnabled={settings.magicLinkEnabled}
+      totpEnabled={settings.totpLoginEnabled}
+      totpFactor={totpFactor}
+      totpUri={totpProvisioningUri}
       message={message}
       error={errorMessage(c.req.query('error'), t)}
       nonce={c.get('secureHeadersNonce')}
@@ -389,6 +416,67 @@ dashboardRoutes.post('/dashboard/identities/email', async (c) => {
   }
 
   return c.redirect('/dashboard?saved=email_sent');
+});
+
+/**
+ * Generates (or regenerates) the pending TOTP secret. The factor stays
+ * unconfirmed — and unusable for sign-in — until a valid code confirms it.
+ */
+dashboardRoutes.post('/dashboard/totp/setup', async (c) => {
+  const user = c.get('user')!;
+  const settings = c.get('settings');
+  if (!settings.totpLoginEnabled) return c.redirect('/dashboard?error=totp_disabled');
+
+  const limit = await rateLimit(c.env.KV, `totp:setup:${user.id}`, 10, 3600);
+  if (!limit.allowed) return c.redirect('/dashboard?error=rate_limited');
+
+  await upsertPendingTotpFactor(c.env.DB, user.id, generateTotpSecret());
+  return c.redirect('/dashboard?saved=totp_started');
+});
+
+/** Confirms the pending factor with a 6-digit code, enabling TOTP sign-in. */
+dashboardRoutes.post('/dashboard/totp/confirm', async (c) => {
+  const user = c.get('user')!;
+  const settings = c.get('settings');
+  if (!settings.totpLoginEnabled) return c.redirect('/dashboard?error=totp_disabled');
+
+  const body = await c.req.parseBody();
+  const code = typeof body.code === 'string' ? body.code : '';
+
+  const limit = await rateLimit(c.env.KV, `totp:confirm:${user.id}`, 10, 900);
+  if (!limit.allowed) return c.redirect('/dashboard?error=rate_limited');
+
+  const factor = await getTotpFactor(c.env.DB, user.id);
+  if (!factor || factor.confirmed) return c.redirect('/dashboard?error=totp_invalid');
+
+  const result = await verifyTotp(factor.secret, code, { window: 1, lastStep: factor.last_step });
+  if (!result.valid) return c.redirect('/dashboard?error=totp_invalid');
+
+  await confirmTotpFactor(c.env.DB, user.id, result.step);
+  return c.redirect('/dashboard?saved=totp_enabled');
+});
+
+/**
+ * Removes the TOTP factor. Allowed even when TOTP sign-in is disabled
+ * site-wide, so no user can get locked out of managing their own factor.
+ * Requires a current valid code.
+ */
+dashboardRoutes.post('/dashboard/totp/disable', async (c) => {
+  const user = c.get('user')!;
+  const body = await c.req.parseBody();
+  const code = typeof body.code === 'string' ? body.code : '';
+
+  const factor = await getTotpFactor(c.env.DB, user.id);
+  if (!factor) return c.redirect('/dashboard?saved=totp_removed');
+
+  const limit = await rateLimit(c.env.KV, `totp:disable:${user.id}`, 10, 900);
+  if (!limit.allowed) return c.redirect('/dashboard?error=rate_limited');
+
+  const result = await verifyTotp(factor.secret, code, { window: 1, lastStep: factor.last_step });
+  if (!result.valid) return c.redirect('/dashboard?error=totp_invalid');
+
+  await deleteTotpFactor(c.env.DB, user.id);
+  return c.redirect('/dashboard?saved=totp_removed');
 });
 
 /** AI assistant: streams a chat completion back to the dashboard over SSE. */

@@ -77,6 +77,7 @@ export interface SiteSettings {
   maintenanceMode: boolean;
   githubLoginEnabled: boolean;
   magicLinkEnabled: boolean;
+  totpLoginEnabled: boolean;
   defaultTheme: string;
   defaultVisibility: string;
   customCss: string;
@@ -113,6 +114,7 @@ const KEY = {
   maintenance: 'maintenance_mode',
   github: 'github_login_enabled',
   magic: 'magic_link_enabled',
+  totp: 'totp_login_enabled',
   defaultTheme: 'default_theme',
   defaultVisibility: 'default_visibility',
   customCss: 'custom_css',
@@ -146,6 +148,7 @@ const DEFAULTS: SiteSettings = {
   maintenanceMode: false,
   githubLoginEnabled: true,
   magicLinkEnabled: true,
+  totpLoginEnabled: true,
   defaultTheme: 'default',
   defaultVisibility: 'public',
   customCss: '',
@@ -203,6 +206,7 @@ export async function getSettings(env: Env): Promise<SiteSettings> {
     maintenanceMode: toBool(map[KEY.maintenance], DEFAULTS.maintenanceMode),
     githubLoginEnabled: toBool(map[KEY.github], DEFAULTS.githubLoginEnabled),
     magicLinkEnabled: toBool(map[KEY.magic], DEFAULTS.magicLinkEnabled),
+    totpLoginEnabled: toBool(map[KEY.totp], DEFAULTS.totpLoginEnabled),
     defaultTheme: map[KEY.defaultTheme] ?? DEFAULTS.defaultTheme,
     defaultVisibility: map[KEY.defaultVisibility] ?? DEFAULTS.defaultVisibility,
     customCss: map[KEY.customCss] ?? DEFAULTS.customCss,
@@ -247,6 +251,7 @@ export async function saveSettings(env: Env, settings: SiteSettings): Promise<vo
     [KEY.maintenance]: settings.maintenanceMode ? '1' : '0',
     [KEY.github]: settings.githubLoginEnabled ? '1' : '0',
     [KEY.magic]: settings.magicLinkEnabled ? '1' : '0',
+    [KEY.totp]: settings.totpLoginEnabled ? '1' : '0',
     [KEY.defaultTheme]: settings.defaultTheme,
     [KEY.defaultVisibility]: settings.defaultVisibility,
     [KEY.customCss]: settings.customCss,

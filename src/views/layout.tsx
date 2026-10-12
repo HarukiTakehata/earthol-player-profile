@@ -5,6 +5,7 @@
  */
 import type { PropsWithChildren } from 'hono/jsx';
 import { htmlLang, LOCALES, type Locale, type TranslateFn } from '../i18n';
+import { ADMIN_SECTIONS } from '../lib/admin-nav';
 import { isSafeFaviconUrl, rawInlineBlock } from '../lib/validate';
 
 export interface LayoutProps {
@@ -453,12 +454,43 @@ function ConsoleShell({
             {t('nav.dashboard')}
           </a>
           {isAdmin ? (
-            <a href="/admin" class={navItem(isActive('/admin'))}>
-              <span class="material-symbols-outlined" aria-hidden="true">
-                admin_panel_settings
-              </span>
-              {t('admin.nav')}
-            </a>
+            <details class="group" open={isActive('/admin') ? true : undefined}>
+              <summary
+                class={`${navItem(isActive('/admin'))} cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden`}
+              >
+                <span class="material-symbols-outlined" aria-hidden="true">
+                  admin_panel_settings
+                </span>
+                <span class="flex-1">{t('admin.nav')}</span>
+                <span
+                  class="material-symbols-outlined icon-sm transition-transform group-open:rotate-90"
+                  aria-hidden="true"
+                >
+                  chevron_right
+                </span>
+              </summary>
+              <div class="ml-5 mt-1 space-y-0.5 border-l border-border/60 pl-2">
+                {ADMIN_SECTIONS.map((item) => {
+                  const active = pathname === item.path;
+                  return (
+                    <a
+                      key={item.path}
+                      href={item.path}
+                      aria-current={active ? 'page' : undefined}
+                      class={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${active
+                        ? 'bg-primary/10 font-semibold text-primary'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                      }`}
+                    >
+                      <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                        {item.icon}
+                      </span>
+                      {t(item.key)}
+                    </a>
+                  );
+                })}
+              </div>
+            </details>
           ) : null}
           {username ? (
             <a href={`/${username}`} class={navItem(isActive(`/${username}`))}>

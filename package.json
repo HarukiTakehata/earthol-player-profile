@@ -1,6 +1,6 @@
 {
   "name": "earthol-player-profile",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,9 @@
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
     "db:init": "wrangler d1 execute earthol-player-profile-d1 --local --file=./schema.sql",
-    "db:init:remote": "wrangler d1 execute earthol-player-profile-d1 --remote --file=./schema.sql"
+    "db:init:remote": "wrangler d1 execute earthol-player-profile-d1 --remote --file=./schema.sql",
+    "db:migrate": "wrangler d1 migrations apply earthol-player-profile-d1 --local",
+    "db:migrate:remote": "wrangler d1 migrations apply earthol-player-profile-d1 --remote"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

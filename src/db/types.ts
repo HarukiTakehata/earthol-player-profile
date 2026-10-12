@@ -63,6 +63,15 @@ export interface LoginTokenRow {
   created_at: number;
 }
 
+export interface TotpFactorRow {
+  user_id: string;
+  secret: string;
+  confirmed: number;
+  last_step: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface ProfileInput {
   username: string;
   displayName: string | null;

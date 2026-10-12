@@ -4,6 +4,7 @@ import type { TagCategoryRow, UserRow } from '../db/types';
 import { TAG_COLORS, tagChipClasses } from '../lib/tags';
 import { THEMES, VISIBILITIES } from '../lib/themes';
 import type { AdminStats } from '../db/queries';
+import { ADMIN_SECTIONS, type AdminSection } from '../lib/admin-nav';
 import { MAX_LANDING_COPY, MAX_LANDING_URL, type LandingCopyKey, type SiteSettings } from '../lib/settings';
 import type { EnvLocks } from '../lib/config';
 import type { Locale, MessageKey, TranslateFn } from '../i18n';
@@ -84,6 +85,8 @@ export interface AdminViewProps {
   csrfToken: string;
   t: TranslateFn;
   locale: Locale;
+  /** Which sub-module page to render (drives the sidebar's second level). */
+  section: AdminSection;
   pathname: string;
   currentUser: { username: string; displayName?: string | null } | null;
   selfId: string;
@@ -126,6 +129,7 @@ export function AdminView({
   csrfToken,
   t,
   locale,
+  section,
   pathname,
   currentUser,
   selfId,
@@ -150,13 +154,16 @@ export function AdminView({
     { label: t('admin.stats.fields'), value: stats.fields },
     { label: t('admin.stats.admins'), value: stats.admins },
   ];
+  const sectionMeta = ADMIN_SECTIONS.find((item) => item.section === section);
+  const pageTitle =
+    section === 'overview' || !sectionMeta ? t('admin.title') : t(sectionMeta.key);
 
   return (
     <Layout
       appName={appName}
       faviconUrl={settings.faviconUrl}
       logoUrl={settings.logoUrl}
-      title={t('admin.title')}
+      title={pageTitle}
       shell="console"
       csrfToken={csrfToken}
       currentUser={currentUser}
@@ -170,10 +177,12 @@ export function AdminView({
       customFooter={settings.customFooter}
     >
       <section class="space-y-6">
-        <div>
-          <h1 class="text-xl font-bold tracking-tight">{t('admin.heading')}</h1>
-          <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.subtitle')}</p>
-        </div>
+        {section === 'overview' ? (
+          <div>
+            <h1 class="text-xl font-bold tracking-tight">{t('admin.heading')}</h1>
+            <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.subtitle')}</p>
+          </div>
+        ) : null}
 
         {message ? (
           <p class="rounded-2xl bg-success/10 px-5 py-4 text-sm text-success ring-1 ring-inset ring-success/25">
@@ -186,17 +195,40 @@ export function AdminView({
           </p>
         ) : null}
 
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {statsCards.map((card) => (
-            <div key={card.label} class="card p-4">
-              <p class="text-2xl font-bold tabular-nums">{card.value}</p>
-              <p class="mt-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {card.label}
-              </p>
+        {section === 'overview' ? (
+          <>
+            <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {statsCards.map((card) => (
+                <div key={card.label} class="card p-4">
+                  <p class="text-2xl font-bold tabular-nums">{card.value}</p>
+                  <p class="mt-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {card.label}
+                  </p>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
 
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {ADMIN_SECTIONS.filter((item) => item.section !== 'overview').map((item) => (
+                <a
+                  key={item.path}
+                  href={item.path}
+                  class="card flex items-center gap-3 p-4 transition hover:border-primary/40 hover:shadow-md"
+                >
+                  <span class="material-symbols-outlined text-primary" aria-hidden="true">
+                    {item.icon}
+                  </span>
+                  <span class="flex-1 text-sm font-semibold">{t(item.key)}</span>
+                  <span class="material-symbols-outlined text-muted-foreground" aria-hidden="true">
+                    chevron_right
+                  </span>
+                </a>
+              ))}
+            </div>
+          </>
+        ) : null}
+
+        {section === 'settings' ? (
         <form method="post" action="/admin/settings" class="card p-6">
           <input type="hidden" name="_csrf" value={csrfToken} />
           <div class="mb-5">
@@ -270,6 +302,11 @@ export function AdminView({
               label={t('admin.settings.magic')}
               checked={settings.magicLinkEnabled}
             />
+            <Toggle
+              name="totp_login_enabled"
+              label={t('admin.settings.totp')}
+              checked={settings.totpLoginEnabled}
+            />
           </div>
 
           <div class="mt-4 grid gap-4 sm:grid-cols-2">
@@ -296,15 +333,16 @@ export function AdminView({
             </button>
           </div>
         </form>
+        ) : null}
 
-        <form method="post" action="/admin/config" class="card p-6">
+        {section === 'integrations' ? (
+        <>
+        <form method="post" action="/admin/config/github" class="card p-6">
           <input type="hidden" name="_csrf" value={csrfToken} />
           <div class="mb-5">
-            <h2 class="text-lg font-bold tracking-tight">{t('admin.integrations.heading')}</h2>
+            <h2 class="text-lg font-bold tracking-tight">{t('admin.integrations.githubHeading')}</h2>
             <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.integrations.subtitle')}</p>
           </div>
-
-          <h3 class="mb-3 text-sm font-semibold">{t('admin.integrations.githubHeading')}</h3>
           <div class="grid gap-4 sm:grid-cols-2">
             <ConfigField
               id="github_client_id"
@@ -335,7 +373,19 @@ export function AdminView({
             </code>
           </p>
 
-          <h3 class="mb-3 mt-6 text-sm font-semibold">{t('admin.integrations.emailHeading')}</h3>
+          <div class="mt-6 flex justify-end">
+            <button type="submit" class="btn-primary">
+              {t('admin.save')}
+            </button>
+          </div>
+        </form>
+
+        <form method="post" action="/admin/config/email" class="card p-6">
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <div class="mb-5">
+            <h2 class="text-lg font-bold tracking-tight">{t('admin.integrations.emailHeading')}</h2>
+            <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.integrations.subtitle')}</p>
+          </div>
           <div class="grid gap-4 sm:grid-cols-2">
             <ConfigSelect
               id="mailer_driver"
@@ -412,8 +462,47 @@ export function AdminView({
             />
           </div>
 
-          <h3 class="mb-3 mt-6 text-sm font-semibold">{t('admin.ai.heading')}</h3>
-          <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.ai.subtitle')}</p>
+          <div class="mt-6 flex justify-end">
+            <button type="submit" class="btn-primary">
+              {t('admin.save')}
+            </button>
+          </div>
+        </form>
+
+        <form method="post" action="/admin/config/gravatar" class="card p-6">
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <div class="mb-5">
+            <h2 class="text-lg font-bold tracking-tight">{t('admin.integrations.gravatarHeading')}</h2>
+            <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.integrations.subtitle')}</p>
+          </div>
+
+          <ConfigField
+            id="gravatar_mirror"
+            name="gravatar_mirror"
+            label={t('admin.integrations.gravatarMirror')}
+            value={integrations.gravatarMirror}
+            placeholder="https://www.gravatar.com/avatar"
+            hint={t('admin.integrations.gravatarHint')}
+            locked={envLocks.gravatarMirror}
+            t={t}
+          />
+
+          <div class="mt-6 flex justify-end">
+            <button type="submit" class="btn-primary">
+              {t('admin.save')}
+            </button>
+          </div>
+        </form>
+        </>
+        ) : null}
+
+        {section === 'ai' ? (
+        <form method="post" action="/admin/ai" class="card p-6">
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <div class="mb-5">
+            <h2 class="text-lg font-bold tracking-tight">{t('admin.ai.heading')}</h2>
+            <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.ai.subtitle')}</p>
+          </div>
 
           <div class="grid gap-4 sm:grid-cols-2">
             <ConfigField
@@ -476,25 +565,16 @@ export function AdminView({
             <div id="ai-test-result" class="min-h-4 text-xs text-muted-foreground"></div>
           </div>
 
-          <h3 class="mb-3 mt-6 text-sm font-semibold">{t('admin.integrations.gravatarHeading')}</h3>
-          <ConfigField
-            id="gravatar_mirror"
-            name="gravatar_mirror"
-            label={t('admin.integrations.gravatarMirror')}
-            value={integrations.gravatarMirror}
-            placeholder="https://www.gravatar.com/avatar"
-            hint={t('admin.integrations.gravatarHint')}
-            locked={envLocks.gravatarMirror}
-            t={t}
-          />
-
           <div class="mt-6 flex justify-end">
             <button type="submit" class="btn-primary">
-              {t('admin.integrations.save')}
+              {t('admin.save')}
             </button>
           </div>
         </form>
+        ) : null}
 
+        {section === 'code' ? (
+        <>
         <form method="post" action="/admin/custom-code" class="card p-6">
           <input type="hidden" name="_csrf" value={csrfToken} />
           <div class="mb-5">
@@ -561,7 +641,10 @@ export function AdminView({
           </div>
         </form>
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: codeMirrorScript(t) }} />
+        </>
+        ) : null}
 
+        {section === 'landing' ? (
         <form method="post" action="/admin/landing" class="card p-6">
           <input type="hidden" name="_csrf" value={csrfToken} />
           <div class="mb-5">
@@ -704,7 +787,9 @@ export function AdminView({
             </button>
           </div>
         </form>
+        ) : null}
 
+        {section === 'reserved' ? (
         <div class="card p-6">
           <div class="mb-5">
             <h2 class="text-lg font-bold tracking-tight">{t('admin.reserved.heading')}</h2>
@@ -749,7 +834,9 @@ export function AdminView({
             ))}
           </div>
         </div>
+        ) : null}
 
+        {section === 'tags' ? (
         <div class="card p-6">
           <div class="mb-5">
             <h2 class="text-lg font-bold tracking-tight">{t('admin.tags.heading')}</h2>
@@ -842,14 +929,16 @@ export function AdminView({
             </>
           )}
         </div>
+        ) : null}
 
+        {section === 'users' ? (
         <div class="card p-6">
           <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 class="text-lg font-bold tracking-tight">{t('admin.users.heading')}</h2>
               <p class="mt-0.5 text-sm text-muted-foreground">{t('admin.users.subtitle')}</p>
             </div>
-            <form method="get" action="/admin" class="flex gap-2">
+            <form method="get" action="/admin/users" class="flex gap-2">
               <input
                 name="q"
                 value={query}
@@ -963,6 +1052,7 @@ export function AdminView({
             </div>
           )}
         </div>
+        ) : null}
       </section>
     </Layout>
   );

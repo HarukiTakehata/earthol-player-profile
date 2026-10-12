@@ -11,6 +11,7 @@ import type {
   ProfileInput,
   TagCategoryRow,
   TagInput,
+  TotpFactorRow,
   UserRow,
   UserTagRow,
 } from './types';
@@ -417,6 +418,61 @@ export async function pruneExpiredLoginTokens(db: D1Database): Promise<void> {
   await db.prepare('DELETE FROM login_tokens WHERE expires_at < ?').bind(now()).run();
 }
 
+/* ---------------------------- totp factors ---------------------------- */
+
+export function getTotpFactor(db: D1Database, userId: string): Promise<TotpFactorRow | null> {
+  return db
+    .prepare('SELECT * FROM totp_factors WHERE user_id = ?')
+    .bind(userId)
+    .first<TotpFactorRow>();
+}
+
+/** Creates or replaces the (still unconfirmed) TOTP factor for a user. */
+export async function upsertPendingTotpFactor(
+  db: D1Database,
+  userId: string,
+  secret: string,
+): Promise<void> {
+  const ts = now();
+  await db
+    .prepare(
+      `INSERT INTO totp_factors (user_id, secret, confirmed, last_step, created_at, updated_at)
+       VALUES (?, ?, 0, NULL, ?, ?)
+       ON CONFLICT (user_id) DO UPDATE SET
+         secret = excluded.secret, confirmed = 0, last_step = NULL,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(userId, secret, ts, ts)
+    .run();
+}
+
+/** Atomic confirm: only a pending (unconfirmed) factor can be activated. */
+export async function confirmTotpFactor(
+  db: D1Database,
+  userId: string,
+  step: number,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      'UPDATE totp_factors SET confirmed = 1, last_step = ?, updated_at = ? WHERE user_id = ? AND confirmed = 0',
+    )
+    .bind(step, now(), userId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+/** Records the step of an accepted code so the same code cannot be replayed. */
+export async function setTotpLastStep(db: D1Database, userId: string, step: number): Promise<void> {
+  await db
+    .prepare('UPDATE totp_factors SET last_step = ?, updated_at = ? WHERE user_id = ?')
+    .bind(step, now(), userId)
+    .run();
+}
+
+export async function deleteTotpFactor(db: D1Database, userId: string): Promise<void> {
+  await db.prepare('DELETE FROM totp_factors WHERE user_id = ?').bind(userId).run();
+}
+
 /* ------------------------------ reserved ------------------------------ */
 
 export async function listReservedUsernames(db: D1Database): Promise<string[]> {
@@ -533,6 +589,7 @@ export async function deleteUser(db: D1Database, userId: string): Promise<UserRo
     db.prepare('DELETE FROM user_tags WHERE user_id = ?').bind(userId),
     db.prepare('DELETE FROM fields WHERE user_id = ?').bind(userId),
     db.prepare('DELETE FROM identities WHERE user_id = ?').bind(userId),
+    db.prepare('DELETE FROM totp_factors WHERE user_id = ?').bind(userId),
     db.prepare('DELETE FROM users WHERE id = ?').bind(userId),
   ];
   // Outstanding magic-link tokens would otherwise still resolve this email.

@@ -1,7 +1,9 @@
 /**
  * Authentication routes: login page, GitHub OAuth flow, magic-link send and
- * consume, and logout. Magic-link tokens are single-use and stored hashed;
- * mail and OAuth failures redirect back with a generic error, never a 500.
+ * consume, TOTP (authenticator code) sign-in, and logout. Magic-link tokens
+ * are single-use and stored hashed; accepted TOTP codes record their time step
+ * to block replays. Mail and OAuth failures redirect back with a generic
+ * error, never a 500.
  */
 import { Hono } from 'hono';
 import type { AppContext } from '../types';
@@ -11,12 +13,17 @@ import {
   createLoginToken,
   consumeLoginToken,
   getLoginToken,
+  getTotpFactor,
+  getUserByEmail,
+  getUserByUsername,
+  setTotpLastStep,
 } from '../db/queries';
 import { linkIdentity, resolveAccount } from '../lib/accounts';
 import { resolveGithub, resolveMailer } from '../lib/config';
 import { requireAuth } from '../middleware/auth';
 import { createSession, destroySession } from '../lib/session';
 import { randomToken, sha256Hex } from '../lib/crypto';
+import { verifyTotp } from '../lib/totp';
 import { magicLinkEmail, getMailer } from '../lib/email';
 import { clientIp, rateLimit } from '../lib/ratelimit';
 import {
@@ -52,6 +59,12 @@ function errorMessage(code: string | undefined, t: TranslateFn): string | undefi
       return t('auth.err.invalidToken');
     case 'signup_disabled':
       return t('auth.err.signupDisabled');
+    case 'totp_disabled':
+      return t('auth.err.totpDisabled');
+    case 'totp_invalid':
+      return t('auth.err.totpInvalid');
+    case 'rate_limited':
+      return t('auth.err.rateLimited');
     default:
       return undefined;
   }
@@ -75,6 +88,7 @@ authRoutes.get('/login', (c) => {
       csrfToken={c.get('csrfToken')}
       githubEnabled={githubConfigured(resolveGithub(c.env, settings)) && settings.githubLoginEnabled}
       magicEnabled={settings.magicLinkEnabled}
+      totpEnabled={settings.totpLoginEnabled}
       next={next}
       error={errorMessage(c.req.query('error'), t)}
       nonce={c.get('secureHeadersNonce')}
@@ -204,6 +218,7 @@ authRoutes.post('/auth/email', async (c) => {
         csrfToken={c.get('csrfToken')}
         githubEnabled={githubConfigured(github) && settings.githubLoginEnabled}
         magicEnabled={settings.magicLinkEnabled}
+        totpEnabled={settings.totpLoginEnabled}
         next={next}
         message={message}
         error={error}
@@ -250,6 +265,47 @@ authRoutes.post('/auth/email', async (c) => {
   }
 
   return render(t('auth.emailSent'));
+});
+
+/**
+ * TOTP sign-in: username/email plus a 6-digit authenticator code. Every
+ * failure path returns the same generic error so accounts cannot be
+ * enumerated, and each accepted code records its time step to block replays.
+ */
+authRoutes.post('/auth/totp', async (c) => {
+  const settings = c.get('settings');
+  if (!settings.totpLoginEnabled) return c.redirect('/login?error=totp_disabled');
+
+  const body = await c.req.parseBody();
+  const identifier = (typeof body.identifier === 'string' ? body.identifier : '').trim().toLowerCase();
+  const code = typeof body.code === 'string' ? body.code : '';
+  const next = safeNext(body.next, appUrl(c.env));
+  const withNext = next ? `&next=${encodeURIComponent(next)}` : '';
+  const back = `/login?error=totp_invalid${withNext}`;
+
+  if (!identifier || !code) return c.redirect(back);
+
+  const ip = clientIp(c.req.raw.headers);
+  const [ipLimit, idLimit] = await Promise.all([
+    rateLimit(c.env.KV, `totp:ip:${ip}`, 10, 900),
+    rateLimit(c.env.KV, `totp:id:${identifier}`, 10, 900),
+  ]);
+  if (!ipLimit.allowed || !idLimit.allowed) {
+    return c.redirect(`/login?error=rate_limited${withNext}`);
+  }
+
+  const user = identifier.includes('@')
+    ? await getUserByEmail(c.env.DB, identifier)
+    : await getUserByUsername(c.env.DB, identifier);
+  const factor = user ? await getTotpFactor(c.env.DB, user.id) : null;
+  if (!user || !factor || !factor.confirmed) return c.redirect(back);
+
+  const result = await verifyTotp(factor.secret, code, { window: 1, lastStep: factor.last_step });
+  if (!result.valid) return c.redirect(back);
+
+  await setTotpLastStep(c.env.DB, user.id, result.step);
+  await createSession(c, user.id);
+  return c.redirect(next ?? landingFor(user));
 });
 
 authRoutes.get('/auth/email/verify', async (c) => {
