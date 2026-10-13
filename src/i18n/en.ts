@@ -80,11 +80,9 @@ export const en = {
   'dash.field.visibility': 'Visibility',
   'dash.viewProfile': 'View profile',
   'dash.saveProfile': 'Save profile',
-  'dash.upload.heading': 'Upload avatar',
-  'dash.upload.subtitle': 'Store an image and use it as your avatar.',
   'dash.upload.submit': 'Upload',
   'dash.upload.hint':
-    'PNG, JPEG, GIF or WebP, up to {max} MB. Uploading replaces the avatar URL above.',
+    'PNG, JPEG, GIF or WebP, up to {max} MB. Uploading stores the image and replaces your current avatar.',
   'dash.fieldsHeading': 'Fields',
   'dash.fieldsSubtitle': 'Add any key/value pairs — stats, handles, or links.',
   'dash.fieldLabelPlaceholder': 'Label',

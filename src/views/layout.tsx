@@ -70,6 +70,16 @@ const TAG_HIDDEN_SCRIPT = `(function(){document.addEventListener('click',functio
 // Event delegation; no inline handlers, so it stays CSP-compatible.
 const GRAVATAR_SCRIPT = `(function(){document.addEventListener('click',function(ev){var t=ev.target;while(t&&t!==document.body){if(t.hasAttribute&&t.hasAttribute('data-gravatar-url')){ev.preventDefault();var row=t.closest('[data-gravatar]');var input=row?row.querySelector('[data-avatar-input]'):null;var url=t.getAttribute('data-gravatar-url');if(input&&url){input.value=url;input.focus();}return;}t=t.parentNode;}});})();`;
 
+// Avatar upload: the Upload button opens the file picker; once a file is chosen
+// the (hidden) file input is submitted to the upload endpoint, bypassing the
+// profile save. `form.submit()` ignores the button's `formaction`, so the form
+// action is retargeted for the single submit. The picker is only opened by the
+// Upload button and the form is only submitted when a file is actually chosen
+// (the script guards on `files.length`), so the file input needs no `required`
+// — that would break the form's other submits (a hidden required control
+// cannot be focused). Delegated; CSP-compatible.
+const AVATAR_FILE_SCRIPT = `(function(){document.addEventListener('click',function(ev){var t=ev.target;while(t&&t!==document.body){if(t.hasAttribute&&t.hasAttribute('data-avatar-upload')){ev.preventDefault();var form=t.closest('form');if(!form)return;var file=form.querySelector('[data-avatar-file]');if(file)file.click();return;}t=t.parentNode;}});document.addEventListener('change',function(ev){var t=ev.target;if(!t||!t.hasAttribute||!t.hasAttribute('data-avatar-file'))return;if(!t.files||!t.files.length)return;var form=t.closest('form');if(!form)return;var prev=form.getAttribute('action')||'';form.setAttribute('action','/dashboard/avatar/upload');form.submit();if(prev)form.setAttribute('action',prev);else form.removeAttribute('action');});})();`;
+
 function Logo({
   appName,
   logoUrl,
@@ -205,6 +215,7 @@ export function Layout({
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: TAG_AUTOCOMPLETE_SCRIPT }} />
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: TAG_HIDDEN_SCRIPT }} />
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: GRAVATAR_SCRIPT }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: AVATAR_FILE_SCRIPT }} />
         <title>{pageTitle}</title>
         {faviconUrl && isSafeFaviconUrl(faviconUrl) ? <link rel="icon" href={faviconUrl} /> : null}
         <meta name="description" content={description ?? t('meta.defaultDescription')} />

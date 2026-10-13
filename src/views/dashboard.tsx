@@ -163,7 +163,7 @@ export function Dashboard({
           </p>
         ) : null}
 
-        <form method="post" action="/dashboard/profile" class="card p-6">
+        <form method="post" action="/dashboard/profile" encType="multipart/form-data" class="card p-6">
           <input type="hidden" name="_csrf" value={csrfToken} />
 
           <div class="mb-5">
@@ -214,7 +214,41 @@ export function Dashboard({
                   {t('dash.useGravatar')}
                 </button>
               ) : null}
+              {uploadEnabled ? (
+                <button
+                  type="submit"
+                  formaction="/dashboard/avatar/upload"
+                  class="btn-outline shrink-0"
+                  data-avatar-upload
+                  title={t('dash.upload.hint', { max: String(MAX_AVATAR_BYTES / (1024 * 1024)) })}
+                >
+                  <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                    upload
+                  </span>
+                  {t('dash.upload.submit')}
+                </button>
+              ) : null}
             </div>
+
+            {uploadEnabled ? (
+              <>
+                {/* The file is picked via the Upload button and submitted with
+                    the profile form (multipart). Hidden so the visible control
+                    is the button only; no `required` — a hidden required
+                    control would block the whole form's validation (Save
+                    profile) since it cannot be focused. */}
+                <input
+                  type="file"
+                  name="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  class="hidden"
+                  data-avatar-file
+                />
+                <p class="mt-1.5 text-xs text-muted-foreground">
+                  {t('dash.upload.hint', { max: String(MAX_AVATAR_BYTES / (1024 * 1024)) })}
+                </p>
+              </>
+            ) : null}
           </div>
 
           <div class="mt-4">
@@ -262,42 +296,6 @@ export function Dashboard({
             </button>
           </div>
         </form>
-
-        {uploadEnabled ? (
-          <form
-            method="post"
-            action="/dashboard/avatar/upload"
-            encType="multipart/form-data"
-            class="card p-6"
-          >
-            <input type="hidden" name="_csrf" value={csrfToken} />
-
-            <div class="mb-5">
-              <h2 class="text-lg font-bold tracking-tight">{t('dash.upload.heading')}</h2>
-              <p class="mt-0.5 text-sm text-muted-foreground">{t('dash.upload.subtitle')}</p>
-            </div>
-
-            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <input
-                type="file"
-                name="file"
-                required
-                accept="image/png,image/jpeg,image/gif,image/webp"
-                class="field min-w-0 flex-1 file:mr-3 file:cursor-pointer file:rounded-full file:border-0 file:bg-muted file:px-3 file:py-1 file:text-xs file:font-semibold file:text-foreground"
-              />
-              <button type="submit" class="btn-primary shrink-0">
-                <span class="material-symbols-outlined icon-sm" aria-hidden="true">
-                  upload
-                </span>
-                {t('dash.upload.submit')}
-              </button>
-            </div>
-
-            <p class="mt-1.5 text-xs text-muted-foreground">
-              {t('dash.upload.hint', { max: String(MAX_AVATAR_BYTES / (1024 * 1024)) })}
-            </p>
-          </form>
-        ) : null}
 
         <section class="card p-6">
           <div class="mb-5">
