@@ -11,6 +11,7 @@ import type {
 import { THEMES, VISIBILITIES } from '../lib/themes';
 import { tagChipClasses } from '../lib/tags';
 import { MAX_AVATAR_BYTES } from '../lib/storage';
+import { DASHBOARD_SECTIONS, type DashboardSection } from '../lib/dashboard-nav';
 import type { Locale, MessageKey, TranslateFn } from '../i18n';
 
 /**
@@ -19,7 +20,7 @@ import type { Locale, MessageKey, TranslateFn } from '../i18n';
  * CSP `scriptSrc`) only when such a factor exists on the page.
  */
 const TOTP_QR_SCRIPT = (s: Record<string, string>) =>
-  `(function(){var S=${JSON.stringify(s)};var box=document.querySelector('[data-totp-qr]');if(!box)return;var uri=box.getAttribute('data-totp-uri')||'';if(!uri)return;function fail(){box.textContent=S.qrFailed;}function ensureQrcode(cb,err){if(typeof qrcode==='function'){cb();return;}var existing=document.querySelector('script[data-totp-qr-lib]');if(existing){existing.addEventListener('load',cb);existing.addEventListener('error',err);return;}var tag=document.createElement('script');tag.src='https://unpkg.com/qrcode-generator@1.4.4/qrcode.js';tag.setAttribute('data-totp-qr-lib','');tag.addEventListener('load',cb);tag.addEventListener('error',err);document.head.appendChild(tag);}ensureQrcode(function(){try{var q=qrcode(0,'M');q.addData(uri);q.make();box.innerHTML=q.createSvgTag({cellSize:5,margin:2,scalable:true});}catch(e){fail();}},fail);})();`;
+  `(function(){var S=${JSON.stringify(s)};function ensureQrcode(box,cb,err){if(typeof qrcode==='function'){cb();return;}var existing=document.querySelector('script[data-totp-qr-lib]');if(existing){existing.addEventListener('load',cb);existing.addEventListener('error',err);return;}var tag=document.createElement('script');tag.src='https://unpkg.com/qrcode-generator@1.4.4/qrcode.js';tag.setAttribute('data-totp-qr-lib','');tag.addEventListener('load',cb);tag.addEventListener('error',err);document.head.appendChild(tag);}function render(){var box=document.querySelector('[data-totp-qr]');if(!box||box.getAttribute('data-totp-rendered'))return;var uri=box.getAttribute('data-totp-uri')||'';if(!uri)return;box.setAttribute('data-totp-rendered','');ensureQrcode(box,function(){try{var q=qrcode(0,'M');q.addData(uri);q.make();box.innerHTML=q.createSvgTag({cellSize:5,margin:2,scalable:true});}catch(e){box.textContent=S.qrFailed;}},function(){box.textContent=S.qrFailed;});}render();document.addEventListener('htmx:afterSwap',render);})();`;
 
 export interface DashboardProps {
   appName: string;
@@ -30,6 +31,8 @@ export interface DashboardProps {
   customFooter?: string;
   csrfToken: string;
   user: UserRow;
+  /** Which sub-module page to render (drives the sidebar's second level). */
+  section: DashboardSection;
   gravatarUrl: string;
   /** R2 avatar uploads are only offered when the bucket binding exists. */
   uploadEnabled: boolean;
@@ -45,6 +48,8 @@ export interface DashboardProps {
   totpFactor: TotpFactorRow | null;
   /** otpauth:// URI, only present while a factor awaits confirmation. */
   totpUri?: string | null;
+  /** True when an AI chat provider is configured for this deployment. */
+  aiConfigured: boolean;
   error?: string;
   message?: string;
   nonce?: string;
@@ -63,6 +68,7 @@ export function Dashboard({
   customFooter,
   csrfToken,
   user,
+  section,
   gravatarUrl,
   uploadEnabled,
   fields,
@@ -74,6 +80,7 @@ export function Dashboard({
   totpEnabled,
   totpFactor,
   totpUri,
+  aiConfigured,
   error,
   message,
   nonce,
@@ -84,6 +91,7 @@ export function Dashboard({
 }: DashboardProps) {
   const githubIdentity = identities.find((identity) => identity.provider === 'github');
   const emailIdentity = identities.find((identity) => identity.provider === 'email');
+  const sectionMeta = DASHBOARD_SECTIONS.find((item) => item.section === section);
 
   return (
     <Layout
@@ -93,7 +101,7 @@ export function Dashboard({
       customCss={customCss}
       customJs={customJs}
       customFooter={customFooter}
-      title={t('dash.title')}
+      title={section === 'profile' ? t('dash.title') : sectionMeta ? t(sectionMeta.key) : t('dash.title')}
       shell="console"
       csrfToken={csrfToken}
       currentUser={{ username: user.username ?? '', displayName: user.display_name }}
@@ -103,7 +111,8 @@ export function Dashboard({
       pathname={pathname}
       isAdmin={isAdmin}
     >
-      {/* AI Assistant Modal */}
+      {/* AI Assistant Modal + floating button: rendered on every dashboard
+          section so the assistant stays reachable from anywhere. */}
       <div id="ai-modal" class="fixed inset-0 z-50 hidden">
         <div class="fixed inset-0 bg-black/50" data-ai-close></div>
         <div class="fixed left-1/2 top-1/2 flex w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl bg-card p-6 shadow-xl">
@@ -163,18 +172,41 @@ export function Dashboard({
           </p>
         ) : null}
 
+        {section === 'profile' ? (
+          <>
+            <div>
+              <h1 class="text-xl font-bold tracking-tight">{t('dash.sheetHeading')}</h1>
+              <p class="mt-0.5 text-sm text-muted-foreground">
+                {t('dash.publicUrl')}{' '}
+                <a class="font-semibold text-primary hover:underline" href={`/${user.username}`}>
+                  /{user.username}
+                </a>
+              </p>
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {DASHBOARD_SECTIONS.filter((item) => item.section !== 'profile').map((item) => (
+                <a
+                  key={item.path}
+                  href={item.path}
+                  class="card flex items-center gap-3 p-4 transition hover:border-primary/40 hover:shadow-md"
+                >
+                  <span class="material-symbols-outlined text-primary" aria-hidden="true">
+                    {item.icon}
+                  </span>
+                  <span class="flex-1 text-sm font-semibold">{t(item.key)}</span>
+                  <span class="material-symbols-outlined text-muted-foreground" aria-hidden="true">
+                    chevron_right
+                  </span>
+                </a>
+              ))}
+            </div>
+          </>
+        ) : null}
+
+        {section === 'profile' ? (
         <form method="post" action="/dashboard/profile" encType="multipart/form-data" class="card p-6">
           <input type="hidden" name="_csrf" value={csrfToken} />
-
-          <div class="mb-5">
-            <h2 class="text-lg font-bold tracking-tight">{t('dash.sheetHeading')}</h2>
-            <p class="mt-0.5 text-sm text-muted-foreground">
-              {t('dash.publicUrl')}{' '}
-              <a class="font-semibold text-primary hover:underline" href={`/${user.username}`}>
-                /{user.username}
-              </a>
-            </p>
-          </div>
 
           <div class="grid gap-4 sm:grid-cols-2">
             <Field label={t('dash.field.handle')} name="username" value={user.username ?? ''} required />
@@ -296,28 +328,30 @@ export function Dashboard({
             </button>
           </div>
         </form>
+        ) : null}
 
-        <section class="card p-6">
-          <div class="mb-5">
-            <h2 class="text-lg font-bold tracking-tight">{t('dash.accountsHeading')}</h2>
-            <p class="mt-0.5 text-sm text-muted-foreground">{t('dash.accountsSubtitle')}</p>
-          </div>
+        {section === 'security' ? (
+          <section class="card p-6">
+            <div class="mb-5">
+              <h1 class="text-xl font-bold tracking-tight">{t('dash.security.heading')}</h1>
+              <p class="mt-0.5 text-sm text-muted-foreground">{t('dash.security.subtitle')}</p>
+            </div>
 
-          <div class="space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-muted px-4 py-3">
-              <div class="flex min-w-0 items-center gap-3">
-                <span class="material-symbols-outlined text-muted-foreground" aria-hidden="true">
-                  code
-                </span>
-                <div class="min-w-0">
-                  <p class="text-sm font-semibold">{t('dash.account.github')}</p>
-                  <p class="truncate text-xs text-muted-foreground">
-                    {githubIdentity
-                      ? githubIdentity.email ?? t('dash.account.connected')
-                      : t('dash.account.notConnected')}
-                  </p>
+            <div class="space-y-3">
+              <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-muted px-4 py-3">
+                <div class="flex min-w-0 items-center gap-3">
+                  <span class="material-symbols-outlined text-muted-foreground" aria-hidden="true">
+                    code
+                  </span>
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold">{t('dash.account.github')}</p>
+                    <p class="truncate text-xs text-muted-foreground">
+                      {githubIdentity
+                        ? githubIdentity.email ?? t('dash.account.connected')
+                        : t('dash.account.notConnected')}
+                    </p>
+                  </div>
                 </div>
-              </div>
               {githubIdentity ? (
                 <span class="rounded-full bg-success/10 px-3 py-1 text-xs font-semibold text-success ring-1 ring-inset ring-success/25">
                   {t('dash.account.connected')}
@@ -385,122 +419,23 @@ export function Dashboard({
               ) : null}
             </div>
 
-            <div class="rounded-2xl bg-muted px-4 py-3">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div class="flex min-w-0 items-center gap-3">
-                  <span class="material-symbols-outlined text-muted-foreground" aria-hidden="true">
-                    security
-                  </span>
-                  <div class="min-w-0">
-                    <p class="text-sm font-semibold">{t('dash.account.totp')}</p>
-                    <p class="truncate text-xs text-muted-foreground">
-                      {totpFactor
-                        ? totpFactor.confirmed
-                          ? t('dash.account.connected')
-                          : t('dash.account.totpPending')
-                        : t('dash.account.notConnected')}
-                    </p>
-                  </div>
-                </div>
-                {totpFactor?.confirmed ? (
-                  <span class="rounded-full bg-success/10 px-3 py-1 text-xs font-semibold text-success ring-1 ring-inset ring-success/25">
-                    {t('dash.account.connected')}
-                  </span>
-                ) : null}
-              </div>
-
-              {totpFactor && !totpFactor.confirmed ? (
-                <div class="mt-4 space-y-3">
-                  <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
-                    <div
-                      data-totp-qr
-                      data-totp-uri={totpUri ?? ''}
-                      class="grid h-44 w-44 shrink-0 place-items-center overflow-hidden rounded-2xl bg-card p-2 text-center text-xs text-muted-foreground [&_svg]:h-full [&_svg]:w-full"
-                    />
-                    <div class="min-w-0 space-y-2">
-                      <p class="text-sm text-muted-foreground">{t('dash.account.totpScanHint')}</p>
-                      <p class="text-sm text-muted-foreground">{t('dash.account.totpManualHint')}</p>
-                      <code class="block select-all break-all rounded-xl bg-card px-3 py-2 text-xs tracking-widest">
-                        {totpFactor.secret}
-                      </code>
-                    </div>
-                  </div>
-                  <form method="post" action="/dashboard/totp/confirm" class="flex flex-col gap-2 sm:flex-row">
-                    <input type="hidden" name="_csrf" value={csrfToken} />
-                    <input
-                      type="text"
-                      name="code"
-                      required
-                      inputmode="numeric"
-                      maxlength={9}
-                      autocomplete="one-time-code"
-                      placeholder={t('dash.account.totpCodeLabel')}
-                      aria-label={t('dash.account.totpCodeLabel')}
-                      class="field min-w-0 flex-1"
-                    />
-                    <button type="submit" class="btn-primary shrink-0">
-                      {t('dash.account.totpConfirm')}
-                    </button>
-                    <button type="submit" formaction="/dashboard/totp/setup" class="btn-outline shrink-0">
-                      {t('dash.account.totpRegenerate')}
-                    </button>
-                  </form>
-                </div>
-              ) : null}
-
-              {!totpFactor && totpEnabled ? (
-                <form method="post" action="/dashboard/totp/setup" class="mt-3">
-                  <input type="hidden" name="_csrf" value={csrfToken} />
-                  <button type="submit" class="btn-outline">
-                    <span class="material-symbols-outlined icon-sm" aria-hidden="true">
-                      add
-                    </span>
-                    {t('dash.account.totpSetup')}
-                  </button>
-                </form>
-              ) : null}
-
-              {totpFactor?.confirmed ? (
-                <>
-                  <form
-                    method="post"
-                    action="/dashboard/totp/disable"
-                    class="mt-3 flex flex-col gap-2 sm:flex-row"
-                  >
-                    <input type="hidden" name="_csrf" value={csrfToken} />
-                    <input
-                      type="text"
-                      name="code"
-                      required
-                      inputmode="numeric"
-                      maxlength={9}
-                      autocomplete="one-time-code"
-                      placeholder={t('dash.account.totpCodeLabel')}
-                      aria-label={t('dash.account.totpCodeLabel')}
-                      class="field min-w-0 flex-1"
-                    />
-                    <button
-                      type="submit"
-                      class="btn-outline shrink-0 border-danger/30 text-danger hover:bg-danger/10"
-                    >
-                      <span class="material-symbols-outlined icon-sm" aria-hidden="true">
-                        delete
-                      </span>
-                      {t('dash.account.totpRemove')}
-                    </button>
-                  </form>
-                  <p class="mt-2 text-xs text-muted-foreground">{t('dash.account.totpRemoveHint')}</p>
-                </>
-              ) : null}
+            <TotpCard
+              csrfToken={csrfToken}
+              totpFactor={totpFactor}
+              totpUri={totpUri}
+              totpEnabled={totpEnabled}
+              t={t}
+            />
             </div>
-          </div>
-        </section>
+          </section>
+        ) : null}
 
+        {section === 'fields' ? (
         <form method="post" action="/dashboard/fields" class="card p-6" data-repeater>
           <input type="hidden" name="_csrf" value={csrfToken} />
 
           <div class="mb-5">
-            <h2 class="text-lg font-bold tracking-tight">{t('dash.fieldsHeading')}</h2>
+            <h1 class="text-xl font-bold tracking-tight">{t('dash.fieldsHeading')}</h1>
             <p class="mt-0.5 text-sm text-muted-foreground">{t('dash.fieldsSubtitle')}</p>
           </div>
 
@@ -631,12 +566,14 @@ export function Dashboard({
             </button>
           </div>
         </form>
+        ) : null}
 
+        {section === 'tags' ? (
         <form method="post" action="/dashboard/tags" class="card p-6" data-repeater>
           <input type="hidden" name="_csrf" value={csrfToken} />
 
           <div class="mb-5">
-            <h2 class="text-lg font-bold tracking-tight">{t('dash.tagsHeading')}</h2>
+            <h1 class="text-xl font-bold tracking-tight">{t('dash.tagsHeading')}</h1>
             <p class="mt-0.5 text-sm text-muted-foreground">{t('dash.tagsSubtitle')}</p>
           </div>
 
@@ -799,6 +736,43 @@ export function Dashboard({
             </>
           )}
         </form>
+        ) : null}
+
+        {section === 'ai' ? (
+          <section class="card p-6">
+            <div class="mb-5">
+              <h1 class="text-xl font-bold tracking-tight">{t('dash.ai.heading')}</h1>
+              <p class="mt-0.5 text-sm text-muted-foreground">{t('dash.ai.subtitle')}</p>
+            </div>
+            <div class="flex items-center justify-between gap-3 rounded-2xl bg-muted px-4 py-3">
+              <div class="flex min-w-0 items-center gap-3">
+                <span class="material-symbols-outlined text-muted-foreground" aria-hidden="true">
+                  smart_toy
+                </span>
+                <div class="min-w-0">
+                  <p class="text-sm font-semibold">{t('dash.ai.title')}</p>
+                  <p class="truncate text-xs text-muted-foreground">
+                    {aiConfigured ? t('dash.account.connected') : t('dash.ai.configureHint')}
+                  </p>
+                </div>
+              </div>
+              {aiConfigured ? (
+                <span class="rounded-full bg-success/10 px-3 py-1 text-xs font-semibold text-success ring-1 ring-inset ring-success/25">
+                  {t('dash.account.connected')}
+                </span>
+              ) : isAdmin ? (
+                <a href="/admin/ai" class="btn-outline shrink-0">
+                  <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                    settings
+                  </span>
+                  {t('admin.nav.ai')}
+                </a>
+              ) : (
+                <span class="text-xs text-muted-foreground">{t('dash.account.notConfigured')}</span>
+              )}
+            </div>
+          </section>
+        ) : null}
       </section>
 
       <script 
@@ -1151,6 +1125,178 @@ function Select(props: {
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+/**
+ * TOTP management card (Security section). Each form is wired to htmx so the
+ * key is generated / confirmed / removed with an in-place swap of this card
+ * instead of a full page reload (which would scroll the page back to the top).
+ * The same component renders the `#totp-card` fragment returned by the TOTP
+ * endpoints when the request comes from htmx.
+ */
+export function TotpCard(props: {
+  csrfToken: string;
+  totpFactor: TotpFactorRow | null;
+  totpUri?: string | null;
+  totpEnabled: boolean;
+  message?: string;
+  error?: string;
+  t: TranslateFn;
+}) {
+  const { csrfToken, totpFactor, totpUri, totpEnabled, message, error, t } = props;
+  return (
+    <div id="totp-card" class="rounded-2xl bg-muted px-4 py-3">
+      {message || error ? (
+        <div class="mb-3 space-y-2">
+          {error ? (
+            <p class="rounded-xl bg-danger/10 px-3 py-2 text-sm text-danger ring-1 ring-inset ring-danger/25">
+              {error}
+            </p>
+          ) : null}
+          {message ? (
+            <p class="rounded-xl bg-success/10 px-3 py-2 text-sm text-success ring-1 ring-inset ring-success/25">
+              {message}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex min-w-0 items-center gap-3">
+          <span class="material-symbols-outlined text-muted-foreground" aria-hidden="true">
+            security
+          </span>
+          <div class="min-w-0">
+            <p class="text-sm font-semibold">{t('dash.account.totp')}</p>
+            <p class="truncate text-xs text-muted-foreground">
+              {totpFactor
+                ? totpFactor.confirmed
+                  ? t('dash.account.connected')
+                  : t('dash.account.totpPending')
+                : t('dash.account.notConnected')}
+            </p>
+          </div>
+        </div>
+        {totpFactor?.confirmed ? (
+          <span class="rounded-full bg-success/10 px-3 py-1 text-xs font-semibold text-success ring-1 ring-inset ring-success/25">
+            {t('dash.account.connected')}
+          </span>
+        ) : null}
+      </div>
+
+      {totpFactor && !totpFactor.confirmed ? (
+        <div class="mt-4 space-y-3">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
+            <div
+              data-totp-qr
+              data-totp-uri={totpUri ?? ''}
+              class="grid h-44 w-44 shrink-0 place-items-center overflow-hidden rounded-2xl bg-card p-2 text-center text-xs text-muted-foreground [&_svg]:h-full [&_svg]:w-full"
+            />
+            <div class="min-w-0 space-y-2">
+              <p class="text-sm text-muted-foreground">{t('dash.account.totpScanHint')}</p>
+              <p class="text-sm text-muted-foreground">{t('dash.account.totpManualHint')}</p>
+              <code class="block select-all break-all rounded-xl bg-card px-3 py-2 text-xs tracking-widest">
+                {totpFactor.secret}
+              </code>
+            </div>
+          </div>
+          <form
+            method="post"
+            action="/dashboard/totp/confirm"
+            hx-post="/dashboard/totp/confirm"
+            hx-target="#totp-card"
+            hx-swap="outerHTML"
+            hx-scroll="false"
+            class="flex flex-col gap-2 sm:flex-row"
+          >
+            <input type="hidden" name="_csrf" value={csrfToken} />
+            <input
+              type="text"
+              name="code"
+              required
+              inputmode="numeric"
+              maxlength={9}
+              autocomplete="one-time-code"
+              placeholder={t('dash.account.totpCodeLabel')}
+              aria-label={t('dash.account.totpCodeLabel')}
+              class="field min-w-0 flex-1"
+            />
+            <button type="submit" class="btn-primary shrink-0">
+              {t('dash.account.totpConfirm')}
+            </button>
+            <button
+              type="submit"
+              formaction="/dashboard/totp/setup"
+              hx-post="/dashboard/totp/setup"
+              hx-target="#totp-card"
+              hx-swap="outerHTML"
+              hx-scroll="false"
+              class="btn-outline shrink-0"
+            >
+              {t('dash.account.totpRegenerate')}
+            </button>
+          </form>
+        </div>
+      ) : null}
+
+      {!totpFactor && totpEnabled ? (
+        <form
+          method="post"
+          action="/dashboard/totp/setup"
+          hx-post="/dashboard/totp/setup"
+          hx-target="#totp-card"
+          hx-swap="outerHTML"
+          hx-scroll="false"
+          class="mt-3"
+        >
+          <input type="hidden" name="_csrf" value={csrfToken} />
+          <button type="submit" class="btn-outline">
+            <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+              add
+            </span>
+            {t('dash.account.totpSetup')}
+          </button>
+        </form>
+      ) : null}
+
+      {totpFactor?.confirmed ? (
+        <>
+          <form
+            method="post"
+            action="/dashboard/totp/disable"
+            hx-post="/dashboard/totp/disable"
+            hx-target="#totp-card"
+            hx-swap="outerHTML"
+            hx-scroll="false"
+            class="mt-3 flex flex-col gap-2 sm:flex-row"
+          >
+            <input type="hidden" name="_csrf" value={csrfToken} />
+            <input
+              type="text"
+              name="code"
+              required
+              inputmode="numeric"
+              maxlength={9}
+              autocomplete="one-time-code"
+              placeholder={t('dash.account.totpCodeLabel')}
+              aria-label={t('dash.account.totpCodeLabel')}
+              class="field min-w-0 flex-1"
+            />
+            <button
+              type="submit"
+              class="btn-outline shrink-0 border-danger/30 text-danger hover:bg-danger/10"
+            >
+              <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                delete
+              </span>
+              {t('dash.account.totpRemove')}
+            </button>
+          </form>
+          <p class="mt-2 text-xs text-muted-foreground">{t('dash.account.totpRemoveHint')}</p>
+        </>
+      ) : null}
     </div>
   );
 }

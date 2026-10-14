@@ -168,15 +168,15 @@ authRoutes.get('/auth/github/callback', async (c) => {
     if (linkUserId) {
       const current = c.get('user');
       if (!current || current.id !== linkUserId) {
-        return c.redirect('/dashboard?error=link_failed');
+        return c.redirect('/dashboard/security?error=link_failed');
       }
       const result = await linkIdentity(c.env.DB, linkUserId, {
         provider: 'github',
         providerUserId: String(ghUser.id),
         email,
       });
-      if (result === 'taken') return c.redirect('/dashboard?error=github_taken');
-      return c.redirect('/dashboard?saved=github_linked');
+      if (result === 'taken') return c.redirect('/dashboard/security?error=github_taken');
+      return c.redirect('/dashboard/security?saved=github_linked');
     }
 
     const settings = c.get('settings');
@@ -193,7 +193,7 @@ authRoutes.get('/auth/github/callback', async (c) => {
     return c.redirect(safeNext(next, appUrl(c.env)) ?? landingFor(user));
   } catch (error) {
     console.error('GitHub OAuth failed', error);
-    return c.redirect(linkUserId ? '/dashboard?error=link_failed' : '/login?error=github_failed');
+    return c.redirect(linkUserId ? '/dashboard/security?error=link_failed' : '/login?error=github_failed');
   }
 });
 
@@ -335,8 +335,8 @@ authRoutes.get('/auth/email/verify', async (c) => {
       providerUserId: row.email,
       email: row.email,
     });
-    if (result === 'taken') return c.redirect('/dashboard?error=email_taken');
-    return c.redirect('/dashboard?saved=email_linked');
+    if (result === 'taken') return c.redirect('/dashboard/security?error=email_taken');
+    return c.redirect('/dashboard/security?saved=email_linked');
   }
 
   const settings = c.get('settings');

@@ -6,6 +6,7 @@
 import type { PropsWithChildren } from 'hono/jsx';
 import { htmlLang, LOCALES, type Locale, type TranslateFn } from '../i18n';
 import { ADMIN_SECTIONS } from '../lib/admin-nav';
+import { DASHBOARD_SECTIONS } from '../lib/dashboard-nav';
 import { isSafeFaviconUrl, rawInlineBlock } from '../lib/validate';
 
 export interface LayoutProps {
@@ -458,12 +459,43 @@ function ConsoleShell({
           <p class="px-3 pb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             {t('nav.workspace')}
           </p>
-          <a href="/dashboard" class={navItem(isActive('/dashboard'))}>
-            <span class="material-symbols-outlined" aria-hidden="true">
-              dashboard
-            </span>
-            {t('nav.dashboard')}
-          </a>
+          <details class="group" open={pathname === '/dashboard' || pathname.startsWith('/dashboard/') ? true : undefined}>
+            <summary
+              class={`${navItem(pathname === '/dashboard' || pathname.startsWith('/dashboard/'))} cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden`}
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">
+                dashboard
+              </span>
+              <span class="flex-1">{t('nav.dashboard')}</span>
+              <span
+                class="material-symbols-outlined icon-sm transition-transform group-open:rotate-90"
+                aria-hidden="true"
+              >
+                chevron_right
+              </span>
+            </summary>
+            <div class="ml-5 mt-1 space-y-0.5 border-l border-border/60 pl-2">
+              {DASHBOARD_SECTIONS.map((item) => {
+                const active = pathname === item.path;
+                return (
+                  <a
+                    key={item.path}
+                    href={item.path}
+                    aria-current={active ? 'page' : undefined}
+                    class={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${active
+                      ? 'bg-primary/10 font-semibold text-primary'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    }`}
+                  >
+                    <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                      {item.icon}
+                    </span>
+                    {t(item.key)}
+                  </a>
+                );
+              })}
+            </div>
+          </details>
           {isAdmin ? (
             <details class="group" open={isActive('/admin') ? true : undefined}>
               <summary

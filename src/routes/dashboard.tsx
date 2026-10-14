@@ -4,9 +4,11 @@
  * profile HTML cache for the affected handle.
  */
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { AppContext } from '../types';
-import { Dashboard } from '../views/dashboard';
+import { Dashboard, TotpCard } from '../views/dashboard';
 import type { FieldInput, TagInput } from '../db/types';
+import { DASHBOARD_SECTION_PATH, type DashboardSection } from '../lib/dashboard-nav';
 import {
   createLoginToken,
   confirmTotpFactor,
@@ -134,18 +136,24 @@ function toArray(value: unknown): string[] {
   return [];
 }
 
-dashboardRoutes.get('/dashboard', async (c) => {
+/**
+ * Renders one dashboard sub-page. Only the data the section displays is
+ * loaded; everything else falls back to empty defaults so the view props stay
+ * fixed. `/dashboard` is the `profile` page (sign-in and external links still
+ * land there).
+ */
+async function renderDashboard(c: Context<AppContext>, section: DashboardSection) {
   const user = c.get('user')!;
   if (!user.username) return c.redirect('/onboarding');
 
   const t = c.get('t');
   const settings = c.get('settings');
   const [fields, tags, tagCategories, identities, totpFactor] = await Promise.all([
-    listFields(c.env.DB, user.id),
-    listUserTags(c.env.DB, user.id),
-    listTagCategories(c.env.DB),
-    listIdentities(c.env.DB, user.id),
-    getTotpFactor(c.env.DB, user.id),
+    section === 'fields' ? listFields(c.env.DB, user.id) : Promise.resolve([]),
+    section === 'tags' ? listUserTags(c.env.DB, user.id) : Promise.resolve([]),
+    section === 'tags' ? listTagCategories(c.env.DB) : Promise.resolve([]),
+    section === 'security' ? listIdentities(c.env.DB, user.id) : Promise.resolve([]),
+    section === 'security' ? getTotpFactor(c.env.DB, user.id) : Promise.resolve(null),
   ]);
   const saved = c.req.query('saved');
   const message =
@@ -189,6 +197,7 @@ dashboardRoutes.get('/dashboard', async (c) => {
       customFooter={c.get('settings').customFooter}
       csrfToken={c.get('csrfToken')}
       user={user}
+      section={section}
       gravatarUrl={await gravatarAvatarUrl(user.email, resolveGravatarMirror(c.env, settings))}
       uploadEnabled={storageEnabled(c.env)}
       fields={fields}
@@ -200,16 +209,24 @@ dashboardRoutes.get('/dashboard', async (c) => {
       totpEnabled={settings.totpLoginEnabled}
       totpFactor={totpFactor}
       totpUri={totpProvisioningUri}
+      aiConfigured={Boolean(resolveOpenAI(c.env, settings))}
       message={message}
       error={errorMessage(c.req.query('error'), t)}
       nonce={c.get('secureHeadersNonce')}
       t={t}
       locale={c.get('locale')}
-      pathname="/dashboard"
+      pathname={DASHBOARD_SECTION_PATH[section]}
       isAdmin={c.get('isAdmin')}
     />,
   );
-});
+}
+
+// One page per sub-module — these are the sidebar's second-level entries.
+dashboardRoutes.get('/dashboard', (c) => renderDashboard(c, 'profile'));
+dashboardRoutes.get('/dashboard/fields', (c) => renderDashboard(c, 'fields'));
+dashboardRoutes.get('/dashboard/tags', (c) => renderDashboard(c, 'tags'));
+dashboardRoutes.get('/dashboard/security', (c) => renderDashboard(c, 'security'));
+dashboardRoutes.get('/dashboard/ai', (c) => renderDashboard(c, 'ai'));
 
 dashboardRoutes.post('/dashboard/profile', async (c) => {
   const user = c.get('user')!;
@@ -325,16 +342,16 @@ dashboardRoutes.post('/dashboard/fields', async (c) => {
     const label = (labels[i] ?? '').trim();
     const value = (values[i] ?? '').trim();
     if (!label && !value) continue;
-    if (!label || !value) return c.redirect('/dashboard?error=invalid_field');
+    if (!label || !value) return c.redirect('/dashboard/fields?error=invalid_field');
 
     fields.push({ label: label.slice(0, MAX_FIELD_LABEL), value: value.slice(0, MAX_FIELD_VALUE) });
   }
 
-  if (fields.length > MAX_FIELDS) return c.redirect('/dashboard?error=too_many_fields');
+  if (fields.length > MAX_FIELDS) return c.redirect('/dashboard/fields?error=too_many_fields');
 
   await replaceFields(c.env.DB, user.id, fields);
   await invalidateProfiles(c.env.KV, [user.username]);
-  return c.redirect('/dashboard?saved=fields');
+  return c.redirect('/dashboard/fields?saved=fields');
 });
 
 dashboardRoutes.post('/dashboard/tags', async (c) => {
@@ -353,9 +370,9 @@ dashboardRoutes.post('/dashboard/tags', async (c) => {
     const value = (values[i] ?? '').trim();
     const categoryId = (categoryIds[i] ?? '').trim();
     if (!value && !categoryId) continue;
-    if (!value || !categoryId) return c.redirect('/dashboard?error=invalid_tag');
+    if (!value || !categoryId) return c.redirect('/dashboard/tags?error=invalid_tag');
     if (!knownIds.has(categoryId)) {
-      return c.redirect('/dashboard?error=unknown_tag_category');
+      return c.redirect('/dashboard/tags?error=unknown_tag_category');
     }
 
     tags.push({
@@ -365,26 +382,26 @@ dashboardRoutes.post('/dashboard/tags', async (c) => {
     });
   }
 
-  if (tags.length > MAX_TAGS) return c.redirect('/dashboard?error=too_many_tags');
+  if (tags.length > MAX_TAGS) return c.redirect('/dashboard/tags?error=too_many_tags');
 
   await replaceUserTags(c.env.DB, user.id, tags);
   await invalidateProfiles(c.env.KV, [user.username]);
-  return c.redirect('/dashboard?saved=tags');
+  return c.redirect('/dashboard/tags?saved=tags');
 });
 
 /** Emails a magic link that binds the address to the signed-in account. */
 dashboardRoutes.post('/dashboard/identities/email', async (c) => {
   const user = c.get('user')!;
   const settings = c.get('settings');
-  if (!settings.magicLinkEnabled) return c.redirect('/dashboard?error=magic_disabled');
+  if (!settings.magicLinkEnabled) return c.redirect('/dashboard/security?error=magic_disabled');
 
   const body = await c.req.parseBody();
   const rawEmail = typeof body.email === 'string' ? body.email : '';
-  if (!isValidEmail(rawEmail)) return c.redirect('/dashboard?error=invalid_email');
+  if (!isValidEmail(rawEmail)) return c.redirect('/dashboard/security?error=invalid_email');
   const email = normalizeEmail(rawEmail);
 
   const owner = await getUserByEmail(c.env.DB, email);
-  if (owner && owner.id !== user.id) return c.redirect('/dashboard?error=email_taken');
+  if (owner && owner.id !== user.id) return c.redirect('/dashboard/security?error=email_taken');
 
   const ip = clientIp(c.req.raw.headers);
   const [ipLimit, emailLimit] = await Promise.all([
@@ -392,7 +409,7 @@ dashboardRoutes.post('/dashboard/identities/email', async (c) => {
     rateLimit(c.env.KV, `email:addr:${email}`, 5, 3600),
   ]);
   if (!ipLimit.allowed || !emailLimit.allowed) {
-    return c.redirect('/dashboard?error=rate_limited');
+    return c.redirect('/dashboard/security?error=rate_limited');
   }
 
   const token = randomToken(32);
@@ -412,11 +429,56 @@ dashboardRoutes.post('/dashboard/identities/email', async (c) => {
     });
   } catch (error) {
     console.error('Account link email failed', error);
-    return c.redirect('/dashboard?error=send_failed');
+    return c.redirect('/dashboard/security?error=send_failed');
   }
 
-  return c.redirect('/dashboard?saved=email_sent');
+  return c.redirect('/dashboard/security?saved=email_sent');
 });
+
+/** True when the request was made by htmx, so TOTP actions can swap the card
+    in place instead of redirecting (a full reload would scroll to the top). */
+function isHtmx(c: Context<AppContext>): boolean {
+  return Boolean(c.req.header('HX-Request'));
+}
+
+/** Renders just the `#totp-card` fragment for an htmx in-place swap. */
+async function renderTotpCard(c: Context<AppContext>, saved?: string, errorCode?: string) {
+  const user = c.get('user')!;
+  const settings = c.get('settings');
+  const t = c.get('t');
+  const factor = await getTotpFactor(c.env.DB, user.id);
+  const totpAccount = user.email ?? user.username ?? user.id;
+  const totpProvisioningUri =
+    factor && !factor.confirmed ? totpUri(factor.secret, totpAccount, c.get('appName')) : null;
+  const message =
+    saved === 'totp_started'
+      ? t('dash.saved.totpStarted')
+      : saved === 'totp_enabled'
+        ? t('dash.saved.totpEnabled')
+        : saved === 'totp_removed'
+          ? t('dash.saved.totpRemoved')
+          : undefined;
+  return c.html(
+    <TotpCard
+      csrfToken={c.get('csrfToken')}
+      totpFactor={factor}
+      totpUri={totpProvisioningUri}
+      totpEnabled={settings.totpLoginEnabled}
+      message={message}
+      error={errorCode ? errorMessage(errorCode, t) : undefined}
+      t={t}
+    />,
+  );
+}
+
+/** Sends a TOTP result back to the Security section: an htmx fragment swap
+    when the request came from htmx, otherwise a redirect (the fallback path
+    for when htmx is unavailable). */
+function totpGoto(c: Context<AppContext>, opts: { saved?: string; error?: string }) {
+  const query = opts.saved ? `saved=${opts.saved}` : `error=${opts.error ?? 'totp_invalid'}`;
+  if (!isHtmx(c)) return c.redirect(`/dashboard/security?${query}`);
+  return renderTotpCard(c, opts.saved, opts.error);
+}
 
 /**
  * Generates (or regenerates) the pending TOTP secret. The factor stays
@@ -425,35 +487,35 @@ dashboardRoutes.post('/dashboard/identities/email', async (c) => {
 dashboardRoutes.post('/dashboard/totp/setup', async (c) => {
   const user = c.get('user')!;
   const settings = c.get('settings');
-  if (!settings.totpLoginEnabled) return c.redirect('/dashboard?error=totp_disabled');
+  if (!settings.totpLoginEnabled) return totpGoto(c, { error: 'totp_disabled' });
 
   const limit = await rateLimit(c.env.KV, `totp:setup:${user.id}`, 10, 3600);
-  if (!limit.allowed) return c.redirect('/dashboard?error=rate_limited');
+  if (!limit.allowed) return totpGoto(c, { error: 'rate_limited' });
 
   await upsertPendingTotpFactor(c.env.DB, user.id, generateTotpSecret());
-  return c.redirect('/dashboard?saved=totp_started');
+  return totpGoto(c, { saved: 'totp_started' });
 });
 
 /** Confirms the pending factor with a 6-digit code, enabling TOTP sign-in. */
 dashboardRoutes.post('/dashboard/totp/confirm', async (c) => {
   const user = c.get('user')!;
   const settings = c.get('settings');
-  if (!settings.totpLoginEnabled) return c.redirect('/dashboard?error=totp_disabled');
+  if (!settings.totpLoginEnabled) return totpGoto(c, { error: 'totp_disabled' });
 
   const body = await c.req.parseBody();
   const code = typeof body.code === 'string' ? body.code : '';
 
   const limit = await rateLimit(c.env.KV, `totp:confirm:${user.id}`, 10, 900);
-  if (!limit.allowed) return c.redirect('/dashboard?error=rate_limited');
+  if (!limit.allowed) return totpGoto(c, { error: 'rate_limited' });
 
   const factor = await getTotpFactor(c.env.DB, user.id);
-  if (!factor || factor.confirmed) return c.redirect('/dashboard?error=totp_invalid');
+  if (!factor || factor.confirmed) return totpGoto(c, { error: 'totp_invalid' });
 
   const result = await verifyTotp(factor.secret, code, { window: 1, lastStep: factor.last_step });
-  if (!result.valid) return c.redirect('/dashboard?error=totp_invalid');
+  if (!result.valid) return totpGoto(c, { error: 'totp_invalid' });
 
   await confirmTotpFactor(c.env.DB, user.id, result.step);
-  return c.redirect('/dashboard?saved=totp_enabled');
+  return totpGoto(c, { saved: 'totp_enabled' });
 });
 
 /**
@@ -467,16 +529,16 @@ dashboardRoutes.post('/dashboard/totp/disable', async (c) => {
   const code = typeof body.code === 'string' ? body.code : '';
 
   const factor = await getTotpFactor(c.env.DB, user.id);
-  if (!factor) return c.redirect('/dashboard?saved=totp_removed');
+  if (!factor) return totpGoto(c, { saved: 'totp_removed' });
 
   const limit = await rateLimit(c.env.KV, `totp:disable:${user.id}`, 10, 900);
-  if (!limit.allowed) return c.redirect('/dashboard?error=rate_limited');
+  if (!limit.allowed) return totpGoto(c, { error: 'rate_limited' });
 
   const result = await verifyTotp(factor.secret, code, { window: 1, lastStep: factor.last_step });
-  if (!result.valid) return c.redirect('/dashboard?error=totp_invalid');
+  if (!result.valid) return totpGoto(c, { error: 'totp_invalid' });
 
   await deleteTotpFactor(c.env.DB, user.id);
-  return c.redirect('/dashboard?saved=totp_removed');
+  return totpGoto(c, { saved: 'totp_removed' });
 });
 
 /** AI assistant: streams a chat completion back to the dashboard over SSE. */
