@@ -67,6 +67,12 @@ const TAG_AUTOCOMPLETE_SCRIPT = `(function(){var box=null,input=null,items=[],in
 // value, so the `hidden`/`tag`/`category_id` arrays stay index-aligned.
 const TAG_HIDDEN_SCRIPT = `(function(){document.addEventListener('click',function(ev){var t=ev.target;while(t&&t!==document.body){if(t.hasAttribute&&t.hasAttribute('data-tag-hidden-toggle')){ev.preventDefault();var row=t.closest('[data-repeater-row]');var field=row?row.querySelector('[data-tag-hidden-input]'):null;var on=t.getAttribute('aria-pressed')==='true';t.setAttribute('aria-pressed',on?'false':'true');if(field)field.value=on?'0':'1';return;}t=t.parentNode;}});})();`;
 
+// Blocks editor (dashboard): flipping a row's type select re-shows the matching
+// content field, and the row counter mirrors the server limit. Both fields
+// always submit, so nothing is lost by switching. Delegation only; no eval,
+// so it stays CSP-compatible.
+const BLOCK_EDITOR_SCRIPT = `(function(){function syncRow(row){var sel=row?row.querySelector('[data-block-kind-select]'):null;if(sel&&row)row.setAttribute('data-block-kind',sel.value);}function updateCount(form){var count=form.querySelector('[data-block-count]');if(!count)return;var max=Number(count.getAttribute('data-block-max')||'0');var tpl=count.getAttribute('data-block-template')||'';if(max>0)count.textContent=tpl.split('{count}').join(String(form.querySelectorAll('[data-repeater-row]').length));if(max>0&&form.querySelectorAll('[data-repeater-row]').length>=max)count.setAttribute('data-block-full','');else count.removeAttribute('data-block-full');}function maxReached(form){var count=form.querySelector('[data-block-count]');var max=Number(count?count.getAttribute('data-block-max')||'0':'0');return max>0&&form.querySelectorAll('[data-repeater-row]').length>=max;}document.addEventListener('input',function(ev){var t=ev.target;if(!t||!t.hasAttribute||!t.hasAttribute('data-block-kind-select'))return;syncRow(t.closest('[data-repeater-row]'));});document.addEventListener('click',function(ev){var t=ev.target;while(t&&t!==document.body){if(t.hasAttribute&&(t.hasAttribute('data-repeater-add')||t.hasAttribute('data-repeater-remove')||t.hasAttribute('data-repeater-move-up')||t.hasAttribute('data-repeater-move-down'))){var form=t.closest('[data-block-form]');if(form){if(t.hasAttribute('data-repeater-add')&&maxReached(form)){ev.preventDefault();return;}updateCount(form);}return;}t=t.parentNode;}});function init(){var forms=document.querySelectorAll('[data-block-form]');for(var i=0;i<forms.length;i++){var rows=forms[i].querySelectorAll('[data-repeater-row]');for(var j=0;j<rows.length;j++)syncRow(rows[j]);updateCount(forms[i]);}}if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',init);}else{init();}})();`;
+
 // Fills the avatar URL input with the server-computed Gravatar URL (dashboard).
 // Event delegation; no inline handlers, so it stays CSP-compatible.
 const GRAVATAR_SCRIPT = `(function(){document.addEventListener('click',function(ev){var t=ev.target;while(t&&t!==document.body){if(t.hasAttribute&&t.hasAttribute('data-gravatar-url')){ev.preventDefault();var row=t.closest('[data-gravatar]');var input=row?row.querySelector('[data-avatar-input]'):null;var url=t.getAttribute('data-gravatar-url');if(input&&url){input.value=url;input.focus();}return;}t=t.parentNode;}});})();`;
@@ -215,6 +221,7 @@ export function Layout({
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: DROPDOWN_SCRIPT }} />
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: TAG_AUTOCOMPLETE_SCRIPT }} />
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: TAG_HIDDEN_SCRIPT }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: BLOCK_EDITOR_SCRIPT }} />
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: GRAVATAR_SCRIPT }} />
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: AVATAR_FILE_SCRIPT }} />
         <title>{pageTitle}</title>

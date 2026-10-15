@@ -4,8 +4,9 @@
  * locale-agnostic (UI strings arrive as a JSON literal).
  */
 import { Layout } from './layout';
-import type { FieldRow, UserRow, UserTagRow } from '../db/types';
+import type { FieldRow, ProfileBlockRow, UserRow, UserTagRow } from '../db/types';
 import { renderMfmBio } from '../lib/mfm';
+import { ProfileBlocks } from '../lib/blocks';
 import { tagChipClasses } from '../lib/tags';
 import { themeStyle } from '../lib/themes';
 import { isSafeUrl } from '../lib/validate';
@@ -21,6 +22,8 @@ export interface ProfileProps {
   user: UserRow;
   fields: FieldRow[];
   tags: UserTagRow[];
+  /** Audience-filtered profile blocks (empty list renders nothing). */
+  blocks?: readonly ProfileBlockRow[];
   csrfToken: string;
   currentUser?: { username: string; displayName?: string | null } | null;
   isOwner?: boolean;
@@ -173,6 +176,7 @@ export function Profile({
   user,
   fields,
   tags,
+  blocks,
   csrfToken,
   currentUser,
   isOwner,
@@ -356,6 +360,14 @@ export function Profile({
                 ))}
               </div>
             ) : null}
+
+            {/*
+              Profile blocks: audience-filtered upstream in src/routes/public.tsx
+              (anonymous cached renders keep only provably-public blocks). The
+              owner additionally sees each block's audience marker. An empty
+              list renders nothing — no empty shell, no layout shift.
+            */}
+            <ProfileBlocks rows={blocks ?? []} isOwner={Boolean(isOwner)} t={t} />
           </div>
         </div>
 

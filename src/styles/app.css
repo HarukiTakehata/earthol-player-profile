@@ -368,6 +368,18 @@
   display: none;
 }
 
+/* Blocks editor: the kind select drives which content field a row shows
+   (text body vs. gallery URL list). Both fields always submit, so the kind
+   can be flipped without losing what was typed. */
+[data-repeater-row][data-block-kind='text'] [data-block-gallery],
+[data-repeater-row][data-block-kind='gallery'] [data-block-text] {
+  display: none;
+}
+/* Blocks editor: counter turns amber at the row limit. */
+[data-block-count][data-block-full] {
+  color: var(--color-amber-600, #d97706);
+}
+
 /* Material Symbols sizing. The Google Fonts stylesheet that defines
    `.material-symbols-outlined` is unlayered, so it beats Tailwind's layered
    utilities (`hidden`, `text-*`). These overrides are unlayered too and loaded

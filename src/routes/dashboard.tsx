@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { AppContext } from '../types';
 import { Dashboard, TotpCard } from '../views/dashboard';
-import type { FieldInput, TagInput } from '../db/types';
+import type { BlockInput, FieldInput, TagInput } from '../db/types';
 import { DASHBOARD_SECTION_PATH, type DashboardSection } from '../lib/dashboard-nav';
 import {
   createLoginToken,
@@ -19,15 +19,19 @@ import {
   isUsernameTakenByOther,
   listFields,
   listIdentities,
+  listProfileBlocks,
   listTagCategories,
   listUserTags,
   replaceFields,
+  replaceProfileBlocks,
   replaceUserTags,
   updateProfile,
   upsertPendingTotpFactor,
+  BLOCK_LIMITS,
 } from '../db/queries';
 import { requireAuth } from '../middleware/auth';
 import { invalidateProfiles } from '../lib/profile-cache';
+import { isBlockVisibility } from '../lib/audience';
 import { gravatarAvatarUrl } from '../lib/gravatar';
 import { githubConfigured } from '../lib/oauth-github';
 import { resolveGithub, resolveGravatarMirror, resolveMailer } from '../lib/config';
@@ -83,6 +87,10 @@ function errorMessage(code: string | undefined, t: TranslateFn): string | undefi
       return t('dash.err.invalidField');
     case 'too_many_fields':
       return t('dash.err.tooManyFields', { max: String(MAX_FIELDS) });
+    case 'invalid_block':
+      return t('dash.err.invalidBlock');
+    case 'too_many_blocks':
+      return t('dash.err.tooManyBlocks', { max: String(BLOCK_LIMITS.maxBlocks) });
     case 'invalid_tag':
       return t('dash.err.invalidTag');
     case 'too_many_tags':
@@ -149,12 +157,13 @@ async function renderDashboard(c: Context<AppContext>, section: DashboardSection
 
   const t = c.get('t');
   const settings = c.get('settings');
-  const [fields, tags, tagCategories, identities, totpFactor] = await Promise.all([
+  const [fields, tags, tagCategories, identities, totpFactor, blocks] = await Promise.all([
     section === 'fields' ? listFields(c.env.DB, user.id) : Promise.resolve([]),
     section === 'tags' ? listUserTags(c.env.DB, user.id) : Promise.resolve([]),
     section === 'tags' ? listTagCategories(c.env.DB) : Promise.resolve([]),
     section === 'security' ? listIdentities(c.env.DB, user.id) : Promise.resolve([]),
     section === 'security' ? getTotpFactor(c.env.DB, user.id) : Promise.resolve(null),
+    section === 'blocks' ? listProfileBlocks(c.env.DB, user.id) : Promise.resolve([]),
   ]);
   const saved = c.req.query('saved');
   const message =
@@ -162,7 +171,9 @@ async function renderDashboard(c: Context<AppContext>, section: DashboardSection
       ? t('dash.savedProfile')
       : saved === 'fields'
         ? t('dash.savedFields')
-        : saved === 'tags'
+        : saved === 'blocks'
+          ? t('dash.savedBlocks')
+          : saved === 'tags'
           ? t('dash.savedTags')
           : saved === 'github_linked'
             ? t('dash.saved.githubLinked')
@@ -204,6 +215,7 @@ async function renderDashboard(c: Context<AppContext>, section: DashboardSection
       fields={fields}
       tags={tags}
       tagCategories={tagCategories}
+      blocks={blocks}
       identities={identities}
       githubEnabled={githubConfigured(resolveGithub(c.env, settings)) && settings.githubLoginEnabled}
       magicEnabled={settings.magicLinkEnabled}
@@ -225,6 +237,7 @@ async function renderDashboard(c: Context<AppContext>, section: DashboardSection
 // One page per sub-module — these are the sidebar's second-level entries.
 dashboardRoutes.get('/dashboard', (c) => renderDashboard(c, 'profile'));
 dashboardRoutes.get('/dashboard/fields', (c) => renderDashboard(c, 'fields'));
+dashboardRoutes.get('/dashboard/blocks', (c) => renderDashboard(c, 'blocks'));
 dashboardRoutes.get('/dashboard/tags', (c) => renderDashboard(c, 'tags'));
 dashboardRoutes.get('/dashboard/security', (c) => renderDashboard(c, 'security'));
 dashboardRoutes.get('/dashboard/ai', (c) => renderDashboard(c, 'ai'));
@@ -355,6 +368,86 @@ dashboardRoutes.post('/dashboard/fields', async (c) => {
   await replaceFields(c.env.DB, user.id, fields);
   await invalidateProfiles(c.env.KV, [user.username]);
   return c.redirect('/dashboard/fields?saved=fields');
+});
+
+dashboardRoutes.post('/dashboard/blocks', async (c) => {
+  const user = c.get('user')!;
+  const body = await c.req.parseBody({ all: true });
+
+  const kinds = toArray(body.kind);
+  const titles = toArray(body.title);
+  const bodies = toArray(body.body);
+  const items = toArray(body.items);
+  const visibilities = toArray(body.visibility);
+
+  /** One submitted row, or null when fully empty (dropped, as with fields). */
+  function rowAt(index: number) {
+    const kind = (kinds[index] ?? '').trim();
+    const visibility = (visibilities[index] ?? '').trim();
+    const title = (titles[index] ?? '').trim();
+    const bodyText = (bodies[index] ?? '').trim();
+    // Gallery items are one URL per line; blanks collapse to nothing.
+    const images =
+      (items[index] ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+    return { kind, visibility, title, bodyText, images };
+  }
+
+  const seen: BlockInput[] = [];
+  for (let i = 0; i < Math.max(kinds.length, visibilities.length, titles.length, bodies.length, items.length); i += 1) {
+    const row = rowAt(i);
+    // A fully-defaulted row with no content at all is dropped, as with fields.
+    const empty =
+      (!row.kind || row.kind === 'text') &&
+      (!row.visibility || row.visibility === 'public') &&
+      !row.title &&
+      !row.bodyText &&
+      row.images.length === 0;
+    if (empty) continue;
+
+    // Content is judged against the kind the row claims, because that is what
+    // will be stored: a text block needs a body, a gallery needs at least one
+    // item. A row that names a kind or audience but carries no matching
+    // content (or vice versa) is half-empty — reject rather than silently
+    // drop, mirroring the fields rule. Unknown kinds/audiences land here too.
+    const hasContent = row.kind === 'gallery' ? row.images.length > 0 : row.bodyText.length > 0;
+    if (!row.kind || !row.visibility || !hasContent) {
+      return c.redirect('/dashboard/blocks?error=invalid_block');
+    }
+
+    // Values outside the known enums are REJECTED, never coerced. Coercing an
+    // audience silently *widens* it — `'public'` is the only fallback the DB
+    // would accept and it is the widest audience there is, so a typo or a
+    // crafted post would publish a block the user meant to restrict, and it
+    // would contradict `audience.ts`, which fails closed on unknown values.
+    // Coercing a kind would likewise silently change what the user asked for.
+    if (!isBlockVisibility(row.visibility) || (row.kind !== 'text' && row.kind !== 'gallery')) {
+      return c.redirect('/dashboard/blocks?error=invalid_block');
+    }
+
+    seen.push({
+      kind: row.kind,
+      title: row.title || null,
+      body: row.kind === 'gallery' ? null : row.bodyText,
+      items: row.kind === 'gallery' ? JSON.stringify(row.images) : null,
+      visibility: row.visibility,
+    });
+  }
+
+  if (seen.length > BLOCK_LIMITS.maxBlocks) {
+    return c.redirect(`/dashboard/blocks?error=too_many_blocks`);
+  }
+
+  // Replace-on-submit: every save rewrites the whole list. `replaceProfileBlocks`
+  // clamps lengths and drops anything that still fails the CHECK constraints, so
+  // a hostile post can only ever produce at most `maxBlocks` in-range rows.
+  await replaceProfileBlocks(c.env.DB, user.id, seen);
+  // Profile mutation: the cached anonymous profile HTML embeds blocks, so it
+  // must not survive the change (a later anonymous fetch would serve it stale).
+  await invalidateProfiles(c.env.KV, [user.username]);
+  return c.redirect('/dashboard/blocks?saved=blocks');
 });
 
 dashboardRoutes.post('/dashboard/tags', async (c) => {
