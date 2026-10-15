@@ -39,6 +39,7 @@ import {
   isStoredPath,
   MAX_AVATAR_BYTES,
   storageEnabled,
+  storedPathOwner,
   storeImage,
 } from '../lib/storage';
 import {
@@ -243,10 +244,12 @@ dashboardRoutes.post('/dashboard/profile', async (c) => {
 
   const websiteRaw = text(body.website, 300);
   const avatarRaw = text(body.avatar_url, 500);
-  // Uploaded avatars are same-origin `/files/...` paths, not http(s) URLs.
+  // Uploaded avatars are same-origin `/files/...` paths, not http(s) URLs —
+  // accepted only when the key belongs to this user (`avatars/<userId>/…`).
   if (
     (websiteRaw && !isSafeUrl(websiteRaw)) ||
-    (avatarRaw && !isSafeUrl(avatarRaw) && !isStoredPath(avatarRaw))
+    (avatarRaw && !isSafeUrl(avatarRaw) &&
+      !(isStoredPath(avatarRaw) && storedPathOwner(avatarRaw) === user.id))
   ) {
     return c.redirect('/dashboard?error=invalid_url');
   }
@@ -259,7 +262,7 @@ dashboardRoutes.post('/dashboard/profile', async (c) => {
 
   // Clearing or replacing an uploaded avatar deletes the old stored object.
   if (isStoredPath(user.avatar_url) && user.avatar_url !== newAvatarUrl) {
-    await deleteStoredImage(c.env, user.avatar_url);
+    await deleteStoredImage(c.env, user.avatar_url, user.id);
   }
 
   await updateProfile(c.env.DB, user.id, {
@@ -309,7 +312,7 @@ dashboardRoutes.post('/dashboard/avatar/upload', async (c) => {
 
   // Best-effort cleanup of the upload this one replaces.
   if (isStoredPath(user.avatar_url) && user.avatar_url !== result.path) {
-    await deleteStoredImage(c.env, user.avatar_url);
+    await deleteStoredImage(c.env, user.avatar_url, user.id);
   }
 
   // Re-save the stored profile with only the avatar changed.
@@ -422,15 +425,18 @@ dashboardRoutes.post('/dashboard/identities/email', async (c) => {
   await c.env.KV.put(`link:email:${tokenHash}`, user.id, { expirationTtl: LINK_TTL_SECONDS });
 
   const link = `${appUrl(c.env)}/auth/email/verify?token=${encodeURIComponent(token)}`;
-  try {
-    await getMailer(resolveMailer(c.env, c.get('settings'))).send({
-      to: email,
-      ...magicLinkEmail(c.get('t'), link, c.get('appName')),
-    });
-  } catch (error) {
-    console.error('Account link email failed', error);
-    return c.redirect('/dashboard/security?error=send_failed');
-  }
+  // Fire-and-forget after the redirect (see the magic-link handler in
+  // src/routes/auth.tsx): the SMTP session must not delay the response.
+  c.executionCtx.waitUntil(
+    getMailer(resolveMailer(c.env, c.get('settings')))
+      .send({
+        to: email,
+        ...magicLinkEmail(c.get('t'), link, c.get('appName')),
+      })
+      .catch((error) => {
+        console.error('Account link email failed', error);
+      }),
+  );
 
   return c.redirect('/dashboard/security?saved=email_sent');
 });
@@ -542,6 +548,9 @@ dashboardRoutes.post('/dashboard/totp/disable', async (c) => {
 });
 
 /** AI assistant: streams a chat completion back to the dashboard over SSE. */
+let aiChatInFlight = 0;
+const AI_CHAT_MAX_CONCURRENCY = 3;
+
 dashboardRoutes.post('/dashboard/ai/chat', async (c) => {
   const user = c.get('user')!;
   const settings = c.get('settings');
@@ -551,6 +560,24 @@ dashboardRoutes.post('/dashboard/ai/chat', async (c) => {
   if (!resolved) {
     return c.json({ error: t('dash.ai.notConfigured') }, 503);
   }
+
+  // Cost abuse guard: this endpoint burns the operator's AI key, so it needs
+  // per-user + per-IP rate limits like upload/email/TOTP do.
+  const ip = clientIp(c.req.raw.headers);
+  const [ipLimit, userLimit] = await Promise.all([
+    rateLimit(c.env.KV, `ai:ip:${ip}`, 60, 3600),
+    rateLimit(c.env.KV, `ai:user:${user.id}`, 30, 3600),
+  ]);
+  if (!ipLimit.allowed || !userLimit.allowed) {
+    return c.json({ error: t('auth.err.rateLimited') }, 429);
+  }
+
+  // Soft cap on simultaneous completions per isolate — quotas alone do not
+  // stop one account from fanning out parallel streams.
+  if (aiChatInFlight >= AI_CHAT_MAX_CONCURRENCY) {
+    return c.json({ error: t('auth.err.rateLimited') }, 429);
+  }
+  aiChatInFlight += 1;
 
   const body = await c.req.parseBody();
   let parsed: unknown = [];
@@ -635,12 +662,15 @@ dashboardRoutes.post('/dashboard/ai/chat', async (c) => {
       const send = (payload: Record<string, unknown>) =>
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
       try {
-        const completion = await resolved.client.chat.completions.create({
-          model: resolved.model,
-          messages: [{ role: 'system', content: system }, ...history.slice(-20)],
-          stream: true,
-          temperature: 0.7,
-        });
+        const completion = await resolved.client.chat.completions.create(
+          {
+            model: resolved.model,
+            messages: [{ role: 'system', content: system }, ...history.slice(-20)],
+            stream: true,
+            temperature: 0.7,
+          },
+          { timeout: 60_000, maxRetries: 0 },
+        );
         for await (const chunk of completion) {
           const delta = chunk.choices[0]?.delta?.content;
           if (delta) send({ delta });
@@ -650,6 +680,7 @@ dashboardRoutes.post('/dashboard/ai/chat', async (c) => {
         console.error('AI chat stream error:', error);
         send({ error: t('dash.ai.error') });
       } finally {
+        aiChatInFlight -= 1;
         controller.close();
       }
     },

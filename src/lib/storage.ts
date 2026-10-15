@@ -103,12 +103,28 @@ export async function storeImage(
   return { key, path: `${STORAGE_PATH_PREFIX}${key}`, contentType: sniffed.type };
 }
 
-/** Best-effort delete of a previously stored object; never throws. */
+/** The owner id embedded in a stored path (`avatars/<userId>/…`), or null. */
+export function storedPathOwner(path: string | null | undefined): string | null {
+  if (!isStoredPath(path)) return null;
+  return path.slice(STORAGE_PATH_PREFIX.length).split('/')[0] ?? null;
+}
+
+/**
+ * Best-effort delete of a previously stored object; never throws. When
+ * `ownerId` is provided the path's embedded owner segment must match it —
+ * a caller may only ever delete its own objects (an admin/deletion path that
+ * acts on another user's row passes that user's id explicitly).
+ */
 export async function deleteStoredImage(
   env: Env,
   path: string | null | undefined,
+  ownerId?: string,
 ): Promise<void> {
   if (!isStoredPath(path) || !storageEnabled(env)) return;
+  if (ownerId !== undefined && storedPathOwner(path) !== ownerId) {
+    console.error('Refused cross-owner avatar delete', { path, ownerId });
+    return;
+  }
   try {
     await env.R2.delete(path.slice(STORAGE_PATH_PREFIX.length));
   } catch (error) {
