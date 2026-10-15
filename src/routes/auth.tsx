@@ -254,15 +254,20 @@ authRoutes.post('/auth/email', async (c) => {
   const link =
     `${appUrl(c.env)}/auth/email/verify?token=${encodeURIComponent(token)}` +
     (next ? `&next=${encodeURIComponent(next)}` : '');
-  try {
-    await getMailer(resolveMailer(c.env, settings)).send({
-      to: email,
-      ...magicLinkEmail(t, link, c.get('appName')),
-    });
-  } catch (error) {
-    console.error('Magic-link email failed', error);
-    return render(undefined, t('auth.err.sendFailed'));
-  }
+  // Deliver the mail AFTER responding: a full SMTP session costs 7–9 network
+  // round-trips (up to the per-op timeout) and used to block the login page.
+  // The mailer driver resolves sync-vs-async, so the console driver still
+  // prints inline. Send failures surface in the Worker log instead of the UI.
+  c.executionCtx.waitUntil(
+    getMailer(resolveMailer(c.env, settings))
+      .send({
+        to: email,
+        ...magicLinkEmail(t, link, c.get('appName')),
+      })
+      .catch((error) => {
+        console.error('Magic-link email failed', error);
+      }),
+  );
 
   return render(t('auth.emailSent'));
 });

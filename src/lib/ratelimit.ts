@@ -24,5 +24,7 @@ export async function rateLimit(
 }
 
 export function clientIp(headers: Headers): string {
-  return headers.get('CF-Connecting-IP') ?? headers.get('X-Forwarded-For') ?? 'unknown';
+  // Fail closed: trust only Cloudflare's authenticated header. `X-Forwarded-For`
+  // is client-spoofable and would let an attacker mint fresh rate-limit buckets.
+  return headers.get('CF-Connecting-IP') ?? 'unknown';
 }

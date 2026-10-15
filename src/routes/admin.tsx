@@ -488,8 +488,9 @@ adminRoutes.post('/admin/users/:id/delete', async (c) => {
 
   const deleted = await deleteUser(c.env.DB, id);
   if (deleted) {
-    // Best-effort removal of the user's uploaded avatar, if any.
-    await deleteStoredImage(c.env, deleted.avatar_url);
+    // Best-effort removal of the user's uploaded avatar, if any. Scoped to
+    // the deleted user's id so a tampered row can only ever clean its own key.
+    await deleteStoredImage(c.env, deleted.avatar_url, id);
     await invalidateProfiles(c.env.KV, [deleted.username]);
   }
   return c.redirect('/admin/users?saved=deleted');
