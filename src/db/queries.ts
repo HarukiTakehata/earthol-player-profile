@@ -4,10 +4,14 @@
  * never build SQL themselves.
  */
 import type {
+  BlockInput,
+  BlockKind,
+  BlockVisibility,
   FieldInput,
   FieldRow,
   IdentityRow,
   LoginTokenRow,
+  ProfileBlockRow,
   ProfileInput,
   TagCategoryRow,
   TagInput,
@@ -15,6 +19,7 @@ import type {
   UserRow,
   UserTagRow,
 } from './types';
+import { text } from '../lib/validate';
 
 export function newId(): string {
   return crypto.randomUUID();
@@ -509,6 +514,149 @@ export async function listFollowingIds(
     .bind(followerId, ...followingIds)
     .all<{ following_id: string }>();
   return (result.results ?? []).map((row) => row.following_id);
+}
+
+/* -------------------------- profile blocks ---------------------------- */
+
+/**
+ * Defensive limits for profile blocks, shared with route-level validation and
+ * the dashboard UI. `replaceProfileBlocks` never exceeds these, so a hostile
+ * submit can only ever produce at most `maxBlocks` rows of at most these
+ * sizes — anything over is dropped, never truncated into a throw.
+ */
+export const BLOCK_LIMITS = {
+  maxBlocks: 20,
+  maxTitleLength: 120,
+  maxBodyLength: 4000,
+  maxGalleryItems: 12,
+  maxGalleryItemLength: 500,
+} as const;
+
+const BLOCK_KINDS: ReadonlySet<string> = new Set(['text', 'gallery']);
+const BLOCK_VISIBILITIES: ReadonlySet<string> = new Set(['public', 'users', 'same_tag', 'self']);
+
+function isBlockKind(value: unknown): value is BlockKind {
+  return typeof value === 'string' && BLOCK_KINDS.has(value);
+}
+
+function isBlockVisibility(value: unknown): value is BlockVisibility {
+  return typeof value === 'string' && BLOCK_VISIBILITIES.has(value);
+}
+
+/**
+ * Normalises a gallery block's `items` into the canonical stored form: a JSON
+ * array string of at most `maxGalleryItems` non-empty strings, each at most
+ * `maxGalleryItemLength` chars. Accepts an array (serialised) or an already
+ * serialised JSON array string (re-normalised). Returns null when the value
+ * cannot be turned into a usable, non-empty array — the caller then drops the
+ * block, which keeps the table's CHECK constraints satisfiable.
+ */
+function coerceGalleryItems(value: unknown): string | null {
+  let entries: unknown[];
+  if (Array.isArray(value)) {
+    entries = value;
+  } else if (typeof value === 'string' && value.trim().length > 0) {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      entries = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return null;
+    }
+  } else {
+    return null;
+  }
+  const usable = entries
+    .map((entry) => text(entry, BLOCK_LIMITS.maxGalleryItemLength))
+    .filter((entry) => entry.length > 0)
+    .slice(0, BLOCK_LIMITS.maxGalleryItems);
+  if (usable.length === 0) return null;
+  try {
+    return JSON.stringify(usable);
+  } catch {
+    return null;
+  }
+}
+
+/** A block after normalisation — exactly what gets stored, all limits applied. */
+interface NormalisedBlock {
+  kind: BlockKind;
+  title: string | null;
+  body: string | null;
+  items: string | null;
+  visibility: BlockVisibility;
+}
+
+/** The block as it will be stored, or null when the input is unusable. */
+function normaliseBlock(input: unknown): NormalisedBlock | null {
+  if (!input || typeof input !== 'object') return null;
+  const block = input as Record<string, unknown>;
+  const kind = isBlockKind(block.kind) ? block.kind : null;
+  if (!kind) return null;
+  const visibility = isBlockVisibility(block.visibility) ? block.visibility : null;
+  if (!visibility) return null;
+  const title = text(block.title, BLOCK_LIMITS.maxTitleLength) || null;
+  if (kind === 'text') {
+    const body = text(block.body, BLOCK_LIMITS.maxBodyLength);
+    if (!body) return null;
+    return { kind, title, body, items: null, visibility };
+  }
+  const items = coerceGalleryItems(block.items);
+  if (items === null) return null;
+  return { kind, title, body: null, items, visibility };
+}
+
+export async function listProfileBlocks(db: D1Database, userId: string): Promise<ProfileBlockRow[]> {
+  const result = await db
+    .prepare('SELECT * FROM profile_blocks WHERE user_id = ? ORDER BY sort_order ASC, created_at ASC')
+    .bind(userId)
+    .all<ProfileBlockRow>();
+  return result.results ?? [];
+}
+
+/**
+ * Replaces the user's whole block list (delete-then-batch-insert, mirroring
+ * `replaceFields`). Never throws on hostile input: invalid kinds/visibilities,
+ * over-limit lists, oversized text, empty text bodies, and unusable gallery
+ * items are dropped or normalised instead. `sort_order` is the index of the
+ * surviving entry, so the stored list is always compact.
+ */
+export async function replaceProfileBlocks(
+  db: D1Database,
+  userId: string,
+  blocks: BlockInput[],
+): Promise<void> {
+  const normalised: NormalisedBlock[] = [];
+  for (const block of blocks ?? []) {
+    const parsed = normaliseBlock(block);
+    if (!parsed) continue;
+    if (normalised.length >= BLOCK_LIMITS.maxBlocks) break;
+    normalised.push(parsed);
+  }
+  const ts = now();
+  const statements = [db.prepare('DELETE FROM profile_blocks WHERE user_id = ?').bind(userId)];
+  normalised.forEach((block, index) => {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO profile_blocks
+             (id, user_id, kind, title, body, items, visibility, sort_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          newId(),
+          userId,
+          block.kind,
+          block.title,
+          block.body,
+          block.items,
+          block.visibility,
+          index,
+          ts,
+          ts,
+        ),
+    );
+  });
+  await db.batch(statements);
 }
 
 /* ----------------------------- login tokens --------------------------- */

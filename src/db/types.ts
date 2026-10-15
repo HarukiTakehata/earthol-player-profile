@@ -1,4 +1,15 @@
 /** Row shapes returned by D1, matching `schema.sql` column-for-column. */
+
+/** The kinds of profile block a user can add to their profile. */
+export type BlockKind = 'text' | 'gallery';
+
+/**
+ * Per-block audience. Mirrors the `profile_blocks.visibility` CHECK in
+ * `schema.sql` — shared with the audience predicate, so the two must always
+ * agree on the literal values.
+ */
+export type BlockVisibility = 'public' | 'users' | 'same_tag' | 'self';
+
 export interface UserRow {
   id: string;
   email: string | null;
@@ -94,6 +105,33 @@ export interface ProfileInput {
 export interface FieldInput {
   label: string;
   value: string;
+}
+
+/**
+ * A profile block as a caller supplies it. `user_id`, `id`, and the timestamps
+ * are assigned by `replaceProfileBlocks` — never by the caller. A 'text' block
+ * must carry a non-null `body`, a 'gallery' block a non-null `items` (a JSON
+ * array string), matching the table's CHECK constraints.
+ */
+export interface BlockInput {
+  kind: BlockKind;
+  title: string | null;
+  body: string | null;
+  items: string | null;
+  visibility: BlockVisibility;
+}
+
+export interface ProfileBlockRow {
+  id: string;
+  user_id: string;
+  kind: string;
+  title: string | null;
+  body: string | null;
+  items: string | null;
+  visibility: string;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface TagInput {
