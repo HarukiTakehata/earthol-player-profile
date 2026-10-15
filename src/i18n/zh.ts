@@ -118,7 +118,7 @@ export const zh: Record<keyof typeof en, string> = {
   'dash.tagsHeading': '标签',
   'dash.tagsSubtitle': '给标签选择分类：玩法风格、社交风格、成就都可以。',
   'dash.tagPlaceholder': '标签',
-  'dash.tagHidden': '隐藏——仅同样拥有该标签的用户可见',
+  'dash.tagHidden': '隐藏——仅你自己可见',
   'dash.addTag': '添加标签',
   'dash.saveTags': '保存标签',
   'dash.savedTags': '标签已保存。',

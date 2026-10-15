@@ -102,16 +102,11 @@ publicRoutes.get('/:username', async (c) => {
       : Promise.resolve(false),
   ]);
 
-  // Hidden tags stay invisible unless the viewer carries the same value
-  // (case-insensitive). Anonymous viewers carry nothing, so they never see them.
-  let visibleTags = tags;
-  if (!isOwner && tags.some((tag) => tag.hidden)) {
-    const viewerTags = viewer ? await listUserTags(c.env.DB, viewer.id) : [];
-    const viewerValues = new Set(viewerTags.map((tag) => tag.value.trim().toLowerCase()));
-    visibleTags = tags.filter(
-      (tag) => !tag.hidden || viewerValues.has(tag.value.trim().toLowerCase()),
-    );
-  }
+  // Hidden tags are visible only to their owner. A value-matching rule would be
+  // an enumeration oracle because any signed-in user can set arbitrary tag values
+  // and probe whether another user's hidden tag appears; without a new consent
+  // / allowlist data model, the only non-enumerable audience is the owner.
+  let visibleTags = tags.filter((tag) => !tag.hidden || isOwner);
 
   const page = (
     <Profile

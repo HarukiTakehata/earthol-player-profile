@@ -119,7 +119,7 @@ export const en = {
   'dash.tagsHeading': 'Tags',
   'dash.tagsSubtitle': 'Short labels grouped by category — playstyle, vibe, achievements.',
   'dash.tagPlaceholder': 'Tag',
-  'dash.tagHidden': 'Hidden — only visible to users with the same tag',
+  'dash.tagHidden': 'Hidden — only visible to you',
   'dash.addTag': 'Add tag',
   'dash.saveTags': 'Save tags',
   'dash.savedTags': 'Tags saved.',
