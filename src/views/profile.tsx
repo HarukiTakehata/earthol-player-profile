@@ -24,6 +24,9 @@ export interface ProfileProps {
   csrfToken: string;
   currentUser?: { username: string; displayName?: string | null } | null;
   isOwner?: boolean;
+  isFollowing?: boolean;
+  followerCount?: number;
+  followingCount?: number;
   canonical?: string;
   robots?: string;
   nonce?: string;
@@ -33,13 +36,124 @@ export interface ProfileProps {
   isAdmin?: boolean;
 }
 
-function initials(user: UserRow): string {
+export function initials(user: UserRow): string {
   const source = user.display_name || user.username || '?';
   return source
     .split(/\s+/)
     .slice(0, 2)
     .map((part) => part.charAt(0).toUpperCase())
     .join('');
+}
+
+/**
+ * The follow button cluster shown on a profile (and per row on the
+ * followers/following list pages): owners get an edit link, logged-in
+ * visitors get a follow/unfollow toggle (htmx swaps this whole block in place
+ * via `POST /api/follow/:username`; the native form fallback reloads the
+ * page), and anonymous visitors get a link into sign-in with the profile as
+ * `next`.
+ */
+export function FollowControl(props: {
+  username: string;
+  isOwner: boolean;
+  isLoggedIn: boolean;
+  isFollowing: boolean;
+  csrfToken: string;
+  notice?: string;
+  t: TranslateFn;
+}) {
+  const { username, isOwner, isLoggedIn, isFollowing, csrfToken, notice, t } = props;
+  const followUrl = `/api/follow/${encodeURIComponent(username)}`;
+  const loginUrl = `/login?next=${encodeURIComponent(`/${username}`)}`;
+
+  if (isOwner) {
+    return (
+      <div class="flex shrink-0 items-center gap-2" data-follow-control>
+        <a class="btn-outline" href="/dashboard">
+          <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+            edit
+          </span>
+          {t('profile.edit')}
+        </a>
+        {notice ? (
+          <span class="text-xs text-danger" role="status">
+            {notice}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return (
+      <div class="flex shrink-0 items-center gap-2" data-follow-control>
+        <a class="btn-primary" href={loginUrl}>
+          <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+            person_add
+          </span>
+          {t('profile.follow')}
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div class="flex shrink-0 flex-wrap items-center gap-2" data-follow-control>
+      <form
+        method="post"
+        action={followUrl}
+        hx-post={followUrl}
+        hx-target="closest [data-follow-control]"
+        hx-swap="outerHTML"
+        hx-scroll="false"
+      >
+        <input type="hidden" name="_csrf" value={csrfToken} />
+        <button
+          type="submit"
+          class={isFollowing ? 'btn-outline' : 'btn-primary'}
+          aria-pressed={isFollowing}
+          aria-label={t(isFollowing ? 'profile.following' : 'profile.follow')}
+          title={t(isFollowing ? 'profile.following' : 'profile.follow')}
+        >
+          <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+            {isFollowing ? 'check_circle' : 'person_add'}
+          </span>
+          {t(isFollowing ? 'profile.following' : 'profile.follow')}
+        </button>
+      </form>
+      {notice ? (
+        <span class="text-xs text-danger" role="status">
+          {notice}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The follower/following stats row shown under the profile header (and on the
+ * two list pages). Both counts are attributes of the profiled user, not the
+ * viewer, so the row is safe to bake into the cached anonymous HTML.
+ */
+export function FollowStats(props: {
+  username: string;
+  followerCount: number;
+  followingCount: number;
+  t: TranslateFn;
+}) {
+  const { username, followerCount, followingCount, t } = props;
+  return (
+    <div class="flex items-center gap-4 text-sm">
+      <a class="hover:underline" href={`/${encodeURIComponent(username)}/followers`}>
+        <span class="font-bold tabular-nums">{followerCount}</span>{' '}
+        <span class="text-muted-foreground">{t('profile.followers')}</span>
+      </a>
+      <a class="hover:underline" href={`/${encodeURIComponent(username)}/following`}>
+        <span class="font-bold tabular-nums">{followingCount}</span>{' '}
+        <span class="text-muted-foreground">{t('profile.following')}</span>
+      </a>
+    </div>
+  );
 }
 
 // Client-side share tools: lazy-loads `qrcode-generator` from unpkg (already
@@ -62,6 +176,9 @@ export function Profile({
   csrfToken,
   currentUser,
   isOwner,
+  isFollowing,
+  followerCount,
+  followingCount,
   canonical,
   robots,
   nonce,
@@ -115,7 +232,7 @@ export function Profile({
         <div class="card overflow-hidden">
           <div class={`h-28 bg-gradient-to-r ${theme.accent}`} />
           <div class="px-6 pb-6">
-            <div class="-mt-14 flex items-end justify-between gap-4">
+            <div class="-mt-14 flex">
               {user.avatar_url ? (
                 <img
                   src={user.avatar_url}
@@ -133,8 +250,64 @@ export function Profile({
               )}
             </div>
 
-            <h1 class="mt-4 text-2xl font-bold tracking-tight">{name}</h1>
-            <p class="text-sm font-medium text-muted-foreground">@{user.username}</p>
+            <div class="mt-4 flex items-center justify-between gap-4">
+              <div class="min-w-0">
+                <h1 class="truncate text-2xl font-bold tracking-tight">{name}</h1>
+                <p class="truncate text-sm font-medium text-muted-foreground">@{user.username}</p>
+              </div>
+              {/* Follow actions: real toggle for signed-in visitors (htmx
+                  swaps the cluster in place), sign-in prompt for anonymous
+                  viewers, edit shortcut for the owner. The report option in
+                  the menu stays hidden until that feature ships. */}
+              <div class="flex shrink-0 items-center gap-1.5">
+                <FollowControl
+                  username={user.username ?? ''}
+                  isOwner={Boolean(isOwner)}
+                  isLoggedIn={Boolean(currentUser)}
+                  isFollowing={Boolean(isFollowing)}
+                  csrfToken={csrfToken}
+                  t={t}
+                />
+                <div class="dropdown" data-dropdown>
+                  <button
+                    type="button"
+                    class="btn-icon"
+                    data-dropdown-toggle
+                    aria-label={t('profile.more')}
+                    title={t('profile.more')}
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                  >
+                    <span class="material-symbols-outlined" aria-hidden="true">
+                      more_horiz
+                    </span>
+                  </button>
+                  <div class="dropdown-menu" data-dropdown-menu role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-profile-report
+                      class="hidden w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                        report
+                      </span>
+                      {t('profile.report')}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-3">
+              <FollowStats
+                username={user.username ?? ''}
+                followerCount={followerCount ?? 0}
+                followingCount={followingCount ?? 0}
+                t={t}
+              />
+            </div>
+
             {user.headline ? <p class="mt-2 text-foreground/90">{user.headline}</p> : null}
 
             <div class="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
