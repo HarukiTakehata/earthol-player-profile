@@ -308,6 +308,13 @@ export function Profile({
               />
             </div>
 
+            <p class="mt-2 flex items-center gap-1.5 text-sm text-muted-foreground">
+              <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                history
+              </span>
+              {t('profile.daysOnEarth', { day: Math.max(1, Math.floor((Date.now() - user.created_at) / 86400000) + 1) })}
+            </p>
+
             {user.headline ? <p class="mt-2 text-foreground/90">{user.headline}</p> : null}
 
             <div class="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">

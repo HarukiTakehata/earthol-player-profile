@@ -209,6 +209,7 @@ export const en = {
   'profile.nfcError': 'NFC write failed: {message}',
   'profile.nfcReadError': 'Could not read the tag. Move it away and try again.',
   'profile.nfcHint': 'On mobile Chrome/Edge over HTTPS. Tap the tag later to open this profile.',
+  'profile.daysOnEarth': 'Day {day} on Earth-OL',
 
   'auth.err.githubFailed': 'GitHub sign-in failed. Please try again.',
   'auth.err.invalidToken': 'That sign-in link is invalid or has expired.',

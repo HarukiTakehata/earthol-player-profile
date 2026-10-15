@@ -208,6 +208,7 @@ export const zh: Record<keyof typeof en, string> = {
   'profile.nfcError': 'NFC 写入失败：{message}',
   'profile.nfcReadError': '无法识别标签，请移开后重试。',
   'profile.nfcHint': '需移动端 Chrome / Edge 且通过 HTTPS 访问。之后用手机轻触标签即可打开本页。',
+  'profile.daysOnEarth': '地球OL 第 {day} 天',
 
   'auth.err.githubFailed': 'GitHub 登录失败，请重试。',
   'auth.err.invalidToken': '该登录链接无效或已过期。',
