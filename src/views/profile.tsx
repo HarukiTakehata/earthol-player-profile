@@ -4,8 +4,9 @@
  * locale-agnostic (UI strings arrive as a JSON literal).
  */
 import { Layout } from './layout';
-import type { FieldRow, UserRow, UserTagRow } from '../db/types';
-import { renderMfmBio } from '../lib/mfm';
+import type { FieldRow, ProfileBlockRow, UserRow, UserTagRow } from '../db/types';
+import { renderMfm } from '../lib/mfm';
+import { ProfileBlocks } from '../lib/blocks';
 import { tagChipClasses } from '../lib/tags';
 import { themeStyle } from '../lib/themes';
 import { isSafeUrl } from '../lib/validate';
@@ -21,6 +22,8 @@ export interface ProfileProps {
   user: UserRow;
   fields: FieldRow[];
   tags: UserTagRow[];
+  /** Audience-filtered profile blocks (empty list renders nothing). */
+  blocks?: readonly ProfileBlockRow[];
   csrfToken: string;
   currentUser?: { username: string; displayName?: string | null } | null;
   isOwner?: boolean;
@@ -173,6 +176,7 @@ export function Profile({
   user,
   fields,
   tags,
+  blocks,
   csrfToken,
   currentUser,
   isOwner,
@@ -308,6 +312,13 @@ export function Profile({
               />
             </div>
 
+            <p class="mt-2 flex items-center gap-1.5 text-sm text-muted-foreground">
+              <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                history
+              </span>
+              {t('profile.daysOnEarth', { day: Math.max(1, Math.floor((Date.now() - user.created_at) / 86400000) + 1) })}
+            </p>
+
             {user.headline ? <p class="mt-2 text-foreground/90">{user.headline}</p> : null}
 
             <div class="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
@@ -327,8 +338,8 @@ export function Profile({
 
             {user.bio ? (
               <div
-                class="mfm-bio mt-5 leading-relaxed text-foreground/85"
-                dangerouslySetInnerHTML={{ __html: renderMfmBio(user.bio) }}
+                class="mfm-body mt-5 leading-relaxed text-foreground/85"
+                dangerouslySetInnerHTML={{ __html: renderMfm(user.bio) }}
               />
             ) : null}
 
@@ -349,6 +360,14 @@ export function Profile({
                 ))}
               </div>
             ) : null}
+
+            {/*
+              Profile blocks: audience-filtered upstream in src/routes/public.tsx
+              (anonymous cached renders keep only provably-public blocks). The
+              owner additionally sees each block's audience marker. An empty
+              list renders nothing — no empty shell, no layout shift.
+            */}
+            <ProfileBlocks rows={blocks ?? []} isOwner={Boolean(isOwner)} t={t} />
           </div>
         </div>
 

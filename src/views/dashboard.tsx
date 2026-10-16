@@ -3,6 +3,7 @@ import { Layout } from './layout';
 import type {
   FieldRow,
   IdentityRow,
+  ProfileBlockRow,
   TagCategoryRow,
   TotpFactorRow,
   UserRow,
@@ -11,6 +12,10 @@ import type {
 import { THEMES, VISIBILITIES } from '../lib/themes';
 import { tagChipClasses } from '../lib/tags';
 import { MAX_AVATAR_BYTES } from '../lib/storage';
+import { BLOCK_LIMITS } from '../db/queries';
+import { isBlockVisibility } from '../lib/audience';
+import type { BlockVisibility } from '../db/types';
+import { audienceOptions, blockKindLabel, parseGalleryItems } from '../lib/blocks';
 import { DASHBOARD_SECTIONS, type DashboardSection } from '../lib/dashboard-nav';
 import type { Locale, MessageKey, TranslateFn } from '../i18n';
 
@@ -39,6 +44,8 @@ export interface DashboardProps {
   fields: FieldRow[];
   tags: UserTagRow[];
   tagCategories: TagCategoryRow[];
+  /** Saved profile blocks for the Blocks editor (`blocks` section only). */
+  blocks?: ProfileBlockRow[];
   identities: IdentityRow[];
   githubEnabled: boolean;
   magicEnabled: boolean;
@@ -74,6 +81,7 @@ export function Dashboard({
   fields,
   tags,
   tagCategories,
+  blocks,
   identities,
   githubEnabled,
   magicEnabled,
@@ -563,6 +571,61 @@ export function Dashboard({
             </button>
             <button type="submit" class="btn-primary">
               {t('dash.saveFields')}
+            </button>
+          </div>
+        </form>
+        ) : null}
+
+        {section === 'blocks' ? (
+        <form method="post" action="/dashboard/blocks" class="card p-6" data-repeater data-block-form>
+          <input type="hidden" name="_csrf" value={csrfToken} />
+
+          <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h1 class="text-xl font-bold tracking-tight">{t('dash.blocksHeading')}</h1>
+              <p class="mt-0.5 text-sm text-muted-foreground">{t('dash.blocksSubtitle')}</p>
+            </div>
+            <p
+              class="text-xs tabular-nums text-muted-foreground"
+              data-block-count
+              data-block-max={BLOCK_LIMITS.maxBlocks}
+              data-block-template={t('dash.block.count', { count: '{count}', max: String(BLOCK_LIMITS.maxBlocks) })}
+            >
+              {t('dash.block.count', {
+                count: String(blocks?.length ?? 0),
+                max: String(BLOCK_LIMITS.maxBlocks),
+              })}
+            </p>
+          </div>
+
+          <div data-repeater-list>
+            {(blocks ?? []).map((block) => (
+              <BlockEditorRow key={block.id} block={block} t={t} />
+            ))}
+          </div>
+
+          <p
+            data-repeater-empty
+            class={`rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground ${
+              blocks && blocks.length ? 'hidden' : ''
+            }`}
+          >
+            {t('dash.noBlocks')}
+          </p>
+
+          <template data-repeater-template>
+            <BlockEditorRow block={null} t={t} />
+          </template>
+
+          <div class="mt-5 flex flex-wrap gap-3">
+            <button type="button" data-repeater-add class="btn-outline">
+              <span class="material-symbols-outlined icon-sm" aria-hidden="true">
+                add
+              </span>
+              {t('dash.addBlock')}
+            </button>
+            <button type="submit" class="btn-primary">
+              {t('dash.saveBlocks')}
             </button>
           </div>
         </form>
@@ -1070,6 +1133,160 @@ export function Dashboard({
         }}
       />
     </Layout>
+  );
+}
+
+/**
+ * Narrows a stored visibility (`ProfileBlockRow.visibility` is a plain string
+ * — D1 rows are untyped) to the matching audience, with the fallback the
+ * dashboard editor should show for a row that no longer matches a known
+ * literal. Never `as BlockVisibility`.
+ */
+function editorVisibility(row: ProfileBlockRow | null): BlockVisibility {
+  return row && isBlockVisibility(row.visibility) ? row.visibility : 'public';
+}
+
+/**
+ * One repeater row of the Blocks editor. `block === null` is the blank row
+ * cloned from `<template data-repeater-template>` by REPEATER_SCRIPT. Keeping
+ * both shapes in one component means a saved row and a fresh row can never
+ * drift apart. The kind `<select>` drives which content field is shown via
+ * the CSS in app.css (`[data-block-kind]` toggles body/items); both submit so
+ * a half-empty row is still caught server-side.
+ */
+function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }) {
+  const { block, t } = props;
+  const kind: 'text' | 'gallery' =
+    block?.kind === 'text' || block?.kind === 'gallery' ? block.kind : 'text';
+  const visibility = editorVisibility(block);
+  const items = kind === 'gallery' ? parseGalleryItems(block?.items ?? null).join('\n') : '';
+
+  return (
+    <div class="mb-4 rounded-2xl bg-muted/40 p-4" data-repeater-row data-block-kind={kind}>
+      <div class="flex flex-col gap-2 sm:flex-row">
+        <select
+          name="kind"
+          data-block-kind-select
+          class="field sm:w-40"
+          aria-label={t('dash.block.kind')}
+        >
+          {(['text', 'gallery'] as const).map((value) => (
+            <option value={value} selected={value === kind}>
+              {blockKindLabel(value, t)}
+            </option>
+          ))}
+        </select>
+        <input
+          name="title"
+          value={block?.title ?? ''}
+          placeholder={t('dash.block.titlePlaceholder')}
+          maxlength={BLOCK_LIMITS.maxTitleLength}
+          class="field min-w-0 flex-1"
+          aria-label={t('dash.block.title')}
+        />
+        <select
+          name="visibility"
+          class="field sm:w-56"
+          aria-label={t('dash.block.audience')}
+        >
+          {audienceOptions(t).map((option) => (
+            <option value={option.value} selected={option.value === visibility}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <div class="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            data-repeater-remove
+            class="btn-outline shrink-0 border-danger/30 px-4 text-danger hover:bg-danger/10"
+            aria-label={t('dash.block.remove')}
+            title={t('dash.block.remove')}
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">
+              delete
+            </span>
+          </button>
+          <button
+            type="button"
+            data-repeater-move-up
+            class="btn-icon shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label={t('dash.block.moveUp')}
+            title={t('dash.block.moveUp')}
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">
+              arrow_upward
+            </span>
+          </button>
+          <button
+            type="button"
+            data-repeater-move-down
+            class="btn-icon shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label={t('dash.block.moveDown')}
+            title={t('dash.block.moveDown')}
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">
+              arrow_downward
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <div data-block-conditions class="mt-3 rounded-xl bg-card/50 p-3">
+        <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {t('dash.block.conditions')}
+        </div>
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <input
+            name="required_tag"
+            value={block?.required_tag ?? ''}
+            placeholder={t('dash.block.requiredTagPlaceholder')}
+            maxlength={BLOCK_LIMITS.maxRequiredTagLength}
+            autocomplete="off"
+            class="field sm:flex-1"
+            aria-label={t('dash.block.requiredTag')}
+          />
+          <input
+            name="min_follow_days"
+            type="number"
+            min={0}
+            step={1}
+            value={block?.min_follow_days ?? ''}
+            placeholder={t('dash.block.minFollowDaysPlaceholder')}
+            class="field sm:w-64"
+            aria-label={t('dash.block.minFollowDays')}
+          />
+        </div>
+      </div>
+
+      <div data-block-text class="mt-2">
+        <textarea
+          name="body"
+          rows={3}
+          maxlength={BLOCK_LIMITS.maxBodyLength}
+          placeholder={t('dash.block.bodyPlaceholder')}
+          class="field w-full"
+          aria-label={t('dash.block.body')}
+        >
+          {block?.body ?? ''}
+        </textarea>
+        <p class="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+          {t('dash.field.bioHint')}
+        </p>
+      </div>
+
+      <div data-block-gallery class="mt-2">
+        <textarea
+          name="items"
+          rows={3}
+          placeholder={t('dash.block.itemsPlaceholder')}
+          class="field w-full font-mono text-xs"
+          aria-label={t('dash.block.items')}
+        >
+          {items}
+        </textarea>
+      </div>
+    </div>
   );
 }
 

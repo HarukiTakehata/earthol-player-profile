@@ -9,6 +9,7 @@ import type { MessageKey } from '../i18n';
 export type DashboardSection =
   | 'profile'
   | 'fields'
+  | 'blocks'
   | 'tags'
   | 'security'
   | 'ai';
@@ -18,6 +19,7 @@ export type DashboardSection =
 export const DASHBOARD_SECTION_PATH: Record<DashboardSection, string> = {
   profile: '/dashboard',
   fields: '/dashboard/fields',
+  blocks: '/dashboard/blocks',
   tags: '/dashboard/tags',
   security: '/dashboard/security',
   ai: '/dashboard/ai',
@@ -33,6 +35,7 @@ export const DASHBOARD_SECTIONS: readonly {
 }[] = [
   { section: 'profile', path: '/dashboard', key: 'dash.nav.profile', icon: 'badge' },
   { section: 'fields', path: '/dashboard/fields', key: 'dash.nav.fields', icon: 'list_alt' },
+  { section: 'blocks', path: '/dashboard/blocks', key: 'dash.nav.blocks', icon: 'widgets' },
   { section: 'tags', path: '/dashboard/tags', key: 'dash.nav.tags', icon: 'sell' },
   { section: 'security', path: '/dashboard/security', key: 'dash.nav.security', icon: 'verified_user' },
   { section: 'ai', path: '/dashboard/ai', key: 'dash.nav.ai', icon: 'smart_toy' },

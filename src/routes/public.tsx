@@ -13,12 +13,14 @@ import { FollowList } from '../views/follows';
 import {
   countFollowers,
   countFollowing,
+  getFollowStartedAt,
   getUserByUsername,
   isFollowing,
   listFields,
   listFollowing,
   listFollowingIds,
   listFollowers,
+  listProfileBlocks,
   listUserTags,
 } from '../db/queries';
 import {
@@ -29,6 +31,14 @@ import {
 } from '../lib/profile-cache';
 import { navUser } from '../lib/view';
 import { appUrl } from '../lib/env';
+import {
+  canViewBlock,
+  conditionsOfRow,
+  isBlockVisibility,
+  normaliseTagValues,
+  type AudienceContext,
+} from '../lib/audience';
+import { cacheableBlocks } from '../lib/blocks';
 
 export const publicRoutes = new Hono<AppContext>();
 
@@ -102,16 +112,58 @@ publicRoutes.get('/:username', async (c) => {
       : Promise.resolve(false),
   ]);
 
-  // Hidden tags stay invisible unless the viewer carries the same value
-  // (case-insensitive). Anonymous viewers carry nothing, so they never see them.
-  let visibleTags = tags;
-  if (!isOwner && tags.some((tag) => tag.hidden)) {
-    const viewerTags = viewer ? await listUserTags(c.env.DB, viewer.id) : [];
-    const viewerValues = new Set(viewerTags.map((tag) => tag.value.trim().toLowerCase()));
-    visibleTags = tags.filter(
-      (tag) => !tag.hidden || viewerValues.has(tag.value.trim().toLowerCase()),
+  // Hidden tags are visible only to their owner. A value-matching rule would be
+  // an enumeration oracle because any signed-in user can set arbitrary tag values
+  // and probe whether another user's hidden tag appears; without a new consent
+  // / allowlist data model, the only non-enumerable audience is the owner.
+  let visibleTags = tags.filter((tag) => !tag.hidden || isOwner);
+
+  // Profile blocks, audience-filtered. The block audience is computed from the
+  // OWNER's tags (hidden ones included — `hidden` is an owner-only display flag
+  // and must not silently disable `same_tag`) and, only when a base audience or
+  // a condition can matter, the VIEWER's tags and the age of their follow.
+  const blockRows = await listProfileBlocks(c.env.DB, user.id);
+  // Viewer tags feed `same_tag` (any shared tag) and a block's specific
+  // `required_tag`; the follow start time feeds `minFollowDays`. The owner
+  // needs neither — the owner branch is unconditional.
+  const needsViewerTags =
+    !cacheable &&
+    blockRows.some(
+      (row) =>
+        (isBlockVisibility(row.visibility) && row.visibility === 'same_tag') ||
+        conditionsOfRow(row).requiredTag !== null,
     );
-  }
+  const needsFollowDuration =
+    !cacheable && blockRows.some((row) => conditionsOfRow(row).minFollowDays !== null);
+  const [viewerTagRows, followStartedAt] = await Promise.all([
+    needsViewerTags && viewer && !isOwner ? listUserTags(c.env.DB, viewer.id) : Promise.resolve([]),
+    needsFollowDuration && viewer && !isOwner
+      ? getFollowStartedAt(c.env.DB, viewer.id, user.id)
+      : Promise.resolve(null),
+  ]);
+  const audience: AudienceContext = {
+    isOwner,
+    viewerIsAuthenticated: Boolean(viewer),
+    viewerTagValues: normaliseTagValues(viewerTagRows.map((tag) => tag.value)),
+    ownerTagValues: normaliseTagValues(tags.map((tag) => tag.value)),
+    followStartedAt,
+    now: Date.now(),
+  };
+  // The cacheable path is the profile-cache contract: the one anonymous HTML
+  // copy served to every visitor may embed only viewer-independent blocks, so
+  // it is filtered by `cacheableBlocks` (provably `public` *and* no conditions)
+  // and derived from the owner's rows alone — never from the viewer. The
+  // non-cacheable path may include viewer-dependent audiences and conditions,
+  // which logged-in viewers are never served from cache.
+  const renderBlocks = cacheable
+    ? cacheableBlocks(blockRows)
+    : blockRows.filter((row) => {
+        const visibility = isBlockVisibility(row.visibility) ? row.visibility : null;
+        // A row with an unknown visibility is not viewable by a non-owner
+        // (fail closed) — never `as BlockVisibility`.
+        if (visibility === null) return isOwner;
+        return canViewBlock(visibility, conditionsOfRow(row), audience);
+      });
 
   const page = (
     <Profile
@@ -124,6 +176,7 @@ publicRoutes.get('/:username', async (c) => {
       user={user}
       fields={fields}
       tags={visibleTags}
+      blocks={renderBlocks}
       csrfToken={c.get('csrfToken')}
       currentUser={navUser(viewer)}
       isOwner={isOwner}

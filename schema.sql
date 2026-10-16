@@ -137,3 +137,33 @@ CREATE TABLE follows (
 );
 
 CREATE INDEX idx_follows_following ON follows (following_id);
+
+-- -------------------------------------------------------- profile blocks
+-- Modular profile content: a user assembles an ordered list of blocks (a text
+-- block or a gallery block), each carrying its own audience. The CHECK
+-- constraints are the storage contract shared with `src/db/types.ts` — the
+-- table itself rejects an unknown `kind`/`visibility`, a 'text' block without
+-- a body, and a 'gallery' block without items. `idx_profile_blocks_user`
+-- covers the per-user list ordered by `sort_order`; the FK cascades on user
+-- deletion. Same definition as `migrations/0003_create_profile_blocks.sql`.
+CREATE TABLE profile_blocks (
+  id               TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  kind             TEXT NOT NULL,
+  title            TEXT,
+  body             TEXT,
+  items            TEXT,
+  visibility       TEXT NOT NULL DEFAULT 'public',
+  required_tag     TEXT,
+  min_follow_days  INTEGER,
+  sort_order       INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
+  CHECK (kind IN ('text', 'gallery')),
+  CHECK (visibility IN ('public', 'users', 'same_tag', 'self')),
+  CHECK (kind <> 'text' OR body IS NOT NULL),
+  CHECK (kind <> 'gallery' OR items IS NOT NULL),
+  CHECK (min_follow_days IS NULL OR min_follow_days >= 0)
+);
+
+CREATE INDEX idx_profile_blocks_user ON profile_blocks (user_id, sort_order);
