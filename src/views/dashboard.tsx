@@ -1265,7 +1265,7 @@ function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }
           rows={3}
           maxlength={BLOCK_LIMITS.maxBodyLength}
           placeholder={t('dash.block.bodyPlaceholder')}
-          class="field w-full"
+          class="field w-full rounded-2xl"
           aria-label={t('dash.block.body')}
         >
           {block?.body ?? ''}
@@ -1280,7 +1280,7 @@ function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }
           name="items"
           rows={3}
           placeholder={t('dash.block.itemsPlaceholder')}
-          class="field w-full font-mono text-xs"
+          class="field w-full rounded-2xl font-mono text-xs"
           aria-label={t('dash.block.items')}
         >
           {items}
