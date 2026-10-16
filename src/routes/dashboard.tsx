@@ -379,6 +379,10 @@ dashboardRoutes.post('/dashboard/blocks', async (c) => {
   const bodies = toArray(body.body);
   const items = toArray(body.items);
   const visibilities = toArray(body.visibility);
+  // The two optional per-block conditions (audience refinement). Both are
+  // optional: an empty value means "no condition" for that block.
+  const requiredTags = toArray(body.required_tag);
+  const minFollowDays = toArray(body.min_follow_days);
 
   /** One submitted row, or null when fully empty (dropped, as with fields). */
   function rowAt(index: number) {
@@ -392,19 +396,25 @@ dashboardRoutes.post('/dashboard/blocks', async (c) => {
         .split('\n')
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
-    return { kind, visibility, title, bodyText, images };
+    const requiredTag = (requiredTags[index] ?? '').trim();
+    const minFollowDaysRaw = (minFollowDays[index] ?? '').trim();
+    return { kind, visibility, title, bodyText, images, requiredTag, minFollowDaysRaw };
   }
 
   const seen: BlockInput[] = [];
   for (let i = 0; i < Math.max(kinds.length, visibilities.length, titles.length, bodies.length, items.length); i += 1) {
     const row = rowAt(i);
     // A fully-defaulted row with no content at all is dropped, as with fields.
+    // A row that only sets a condition but has no content is still "empty" —
+    // a condition alone is not a visible block.
     const empty =
       (!row.kind || row.kind === 'text') &&
       (!row.visibility || row.visibility === 'public') &&
       !row.title &&
       !row.bodyText &&
-      row.images.length === 0;
+      row.images.length === 0 &&
+      !row.requiredTag &&
+      !row.minFollowDaysRaw;
     if (empty) continue;
 
     // Content is judged against the kind the row claims, because that is what
@@ -427,12 +437,27 @@ dashboardRoutes.post('/dashboard/blocks', async (c) => {
       return c.redirect('/dashboard/blocks?error=invalid_block');
     }
 
+    // The two conditions are validated here rather than coerced downstream: a
+    // non-empty `min_follow_days` that is not a whole non-negative number (or
+    // over the cap), or a `required_tag` too long, is rejected — mirroring the
+    // kind/visibility rule above. An empty value is simply "no condition".
+    const minOk =
+      row.minFollowDaysRaw === '' ||
+      (/^\d+$/.test(row.minFollowDaysRaw) &&
+        Number(row.minFollowDaysRaw) <= BLOCK_LIMITS.maxMinFollowDays);
+    if (!minOk || row.requiredTag.length > BLOCK_LIMITS.maxRequiredTagLength) {
+      return c.redirect('/dashboard/blocks?error=invalid_block');
+    }
+
     seen.push({
       kind: row.kind,
       title: row.title || null,
       body: row.kind === 'gallery' ? null : row.bodyText,
       items: row.kind === 'gallery' ? JSON.stringify(row.images) : null,
       visibility: row.visibility,
+      requiredTag: row.requiredTag || null,
+      // Validated above: a non-empty `minFollowDaysRaw` is a whole 0..cap number.
+      minFollowDays: row.minFollowDaysRaw === '' ? null : Number(row.minFollowDaysRaw),
     });
   }
 

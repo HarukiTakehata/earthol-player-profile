@@ -147,20 +147,23 @@ CREATE INDEX idx_follows_following ON follows (following_id);
 -- covers the per-user list ordered by `sort_order`; the FK cascades on user
 -- deletion. Same definition as `migrations/0003_create_profile_blocks.sql`.
 CREATE TABLE profile_blocks (
-  id          TEXT PRIMARY KEY,
-  user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  kind        TEXT NOT NULL,
-  title       TEXT,
-  body        TEXT,
-  items       TEXT,
-  visibility  TEXT NOT NULL DEFAULT 'public',
-  sort_order  INTEGER NOT NULL DEFAULT 0,
-  created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL,
+  id               TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  kind             TEXT NOT NULL,
+  title            TEXT,
+  body             TEXT,
+  items            TEXT,
+  visibility       TEXT NOT NULL DEFAULT 'public',
+  required_tag     TEXT,
+  min_follow_days  INTEGER,
+  sort_order       INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
   CHECK (kind IN ('text', 'gallery')),
   CHECK (visibility IN ('public', 'users', 'same_tag', 'self')),
   CHECK (kind <> 'text' OR body IS NOT NULL),
-  CHECK (kind <> 'gallery' OR items IS NOT NULL)
+  CHECK (kind <> 'gallery' OR items IS NOT NULL),
+  CHECK (min_follow_days IS NULL OR min_follow_days >= 0)
 );
 
 CREATE INDEX idx_profile_blocks_user ON profile_blocks (user_id, sort_order);

@@ -1232,6 +1232,33 @@ function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }
         </div>
       </div>
 
+      <div data-block-conditions class="mt-3 rounded-xl bg-card/50 p-3">
+        <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {t('dash.block.conditions')}
+        </div>
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <input
+            name="required_tag"
+            value={block?.required_tag ?? ''}
+            placeholder={t('dash.block.requiredTagPlaceholder')}
+            maxlength={BLOCK_LIMITS.maxRequiredTagLength}
+            autocomplete="off"
+            class="field sm:flex-1"
+            aria-label={t('dash.block.requiredTag')}
+          />
+          <input
+            name="min_follow_days"
+            type="number"
+            min={0}
+            step={1}
+            value={block?.min_follow_days ?? ''}
+            placeholder={t('dash.block.minFollowDaysPlaceholder')}
+            class="field sm:w-64"
+            aria-label={t('dash.block.minFollowDays')}
+          />
+        </div>
+      </div>
+
       <div data-block-text class="mt-2">
         <textarea
           name="body"

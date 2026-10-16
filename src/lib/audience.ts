@@ -20,8 +20,16 @@
  * blocks by adding candidate tag values to their own profile and re-fetching,
  * watching which blocks appear. That is an accepted product trade-off, not a
  * bug to paper over — the existing hidden-tag rule in `src/views/profile.tsx`
- * leans on the same property. A per-block "which tag" column, or a per-user
- * allowlist audience, would be separate features and neither is implied here.
+ * leans on the same property.
+ *
+ * On top of the four audiences, each block may carry up to two optional
+ * *conditions* (`BlockConditions`), ANDed in `canViewBlock`: `requiredTag`
+ * (the viewer must carry one specific normalised tag value — the per-block
+ * "which tag" refinement of `same_tag`) and `minFollowDays` (the viewer must
+ * have been following for at least N whole days, 0 = any follower). Both are
+ * answered differently by different viewers, so `isViewerIndependent` treats
+ * any block carrying one as viewer-dependent and keeps it out of the shared
+ * anonymous cache.
  */
 import type { BlockVisibility } from '../db/types';
 
@@ -98,6 +106,75 @@ export function shareTagValue(viewerTagValues: ReadonlySet<string>, ownerTagValu
   return false;
 }
 
+/**
+ * The two optional per-block conditions that refine the base `visibility`.
+ * Both are ANDed on top of it in `canViewBlock`; both `null` means "no extra
+ * condition". `requiredTag` is a normalised tag value the viewer must carry,
+ * and `minFollowDays` is the minimum whole days the viewer has been following
+ * (0 = any follower, regardless of duration).
+ *
+ * Either condition is viewer-dependent by nature — the answer changes with
+ * *who* is looking — so a block carrying one is never baked into the shared
+ * anonymous cache (see `isViewerIndependent`).
+ */
+export interface BlockConditions {
+  /** Normalised tag value the viewer must have, or null for no tag condition. */
+  requiredTag: string | null;
+  /** Minimum whole days the viewer has been following, or null for none. */
+  minFollowDays: number | null;
+}
+
+/** The "no extra condition" pair — the common case for a plain block. */
+export const NO_CONDITIONS: BlockConditions = { requiredTag: null, minFollowDays: null };
+
+/** True when at least one condition is set (a viewer-dependent refinement). */
+export function hasConditions(conditions: BlockConditions): boolean {
+  return conditions.requiredTag !== null || conditions.minFollowDays !== null;
+}
+
+const MS_PER_DAY = 86_400_000;
+
+/** Whole days between two epoch-ms timestamps, clamped at zero (clock skew). */
+export function wholeDaysBetween(startedAt: number, now: number): number {
+  return Math.max(0, Math.floor((now - startedAt) / MS_PER_DAY));
+}
+
+/**
+ * Does a follow that started at `followStartedAt` satisfy a `minFollowDays`
+ * requirement? Not following (`null`) never satisfies any requirement — even
+ * 0 (which means "any follower"), because a non-follower is not a follower.
+ */
+export function meetsMinFollowDays(
+  minFollowDays: number,
+  followStartedAt: number | null,
+  now: number,
+): boolean {
+  if (followStartedAt === null) return false;
+  return wholeDaysBetween(followStartedAt, now) >= minFollowDays;
+}
+
+/**
+ * Reads a stored row's condition columns defensively and normalises them,
+ * mirroring `isBlockVisibility`'s fail-closed stance: a missing or malformed
+ * value degrades to "no condition" (the rule is simply not enforced), never
+ * to a value that could widen the audience.
+ */
+export function conditionsOfRow(row: {
+  required_tag: unknown;
+  min_follow_days: unknown;
+}): BlockConditions {
+  return {
+    requiredTag: normaliseTagValue(row.required_tag) || null,
+    minFollowDays: nonNegativeIntOrNull(row.min_follow_days),
+  };
+}
+
+function nonNegativeIntOrNull(value: unknown): number | null {
+  const n =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 /** Everything `canViewBlock` needs to know about one (viewer, owner) pair. */
 export interface AudienceContext {
   /** True when the viewer is the profile's owner. An unconditional override. */
@@ -108,6 +185,10 @@ export interface AudienceContext {
   viewerTagValues: ReadonlySet<string>;
   /** The owner's normalised tag values (all of them, hidden tags included). */
   ownerTagValues: ReadonlySet<string>;
+  /** Epoch ms the viewer started following the owner, or null if not following. */
+  followStartedAt: number | null;
+  /** "Now" in epoch ms — injected by the caller so this stays pure/testable. */
+  now: number;
 }
 
 /**
@@ -123,8 +204,35 @@ export interface AudienceContext {
  * INSERT, or a stale row left behind if a literal were ever renamed) is *not*
  * viewable by a non-owner. Hiding the block is always the safe failure.
  */
-export function canViewBlock(visibility: BlockVisibility, ctx: AudienceContext): boolean {
-  if (ctx.isOwner) return true;
+export function canViewBlock(
+  visibility: BlockVisibility,
+  conditions: BlockConditions,
+  ctx: AudienceContext,
+): boolean {
+  if (ctx.isOwner) return true; // Owners always see their own blocks, conditions included.
+
+  // The base audience must pass first (a `self` block already fails here for
+  // non-owners). The conditions are then ANDed on top: each one that is set
+  // must be satisfied by this specific viewer.
+  if (!baseAudienceVisible(visibility, ctx)) return false;
+  if (conditions.requiredTag !== null && !ctx.viewerTagValues.has(conditions.requiredTag)) {
+    return false;
+  }
+  if (
+    conditions.minFollowDays !== null &&
+    !meetsMinFollowDays(conditions.minFollowDays, ctx.followStartedAt, ctx.now)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The base four-audience decision (widest→narrowest) before any per-block
+ * conditions are applied. Extracted so the conditions read as a clean AND on
+ * top of it. Fails closed on an unknown visibility.
+ */
+function baseAudienceVisible(visibility: BlockVisibility, ctx: AudienceContext): boolean {
   switch (visibility) {
     case 'public':
       return true; // Everyone, anonymous viewers included.
@@ -145,14 +253,16 @@ export function canViewBlock(visibility: BlockVisibility, ctx: AudienceContext):
 }
 
 /**
- * True iff the rendered result is identical for every viewer — only `public`.
- * This is the profile-cache contract made explicit: the anonymous KV-cached
- * profile HTML (`src/lib/profile-cache.ts`, one copy served to every visitor
- * for 300s) may embed only blocks whose visibility passes this test, so a
- * caller cannot accidentally bake a viewer-specific block into shared cache.
- * An unknown visibility is viewer-dependent by the same fail-closed rule: if
- * it cannot be proven shareable with the world, it must not be cached.
+ * True iff the rendered result is identical for every viewer. This is the
+ * profile-cache contract made explicit: the anonymous KV-cached profile HTML
+ * (`src/lib/profile-cache.ts`, one copy served to every visitor for 300s) may
+ * embed only blocks that pass this test, so a caller cannot accidentally bake
+ * a viewer-specific block into the shared cache. Only a `public` block with no
+ * conditions qualifies — `users`/`same_tag`/`self` and both conditions all
+ * vary by viewer. An unknown visibility is viewer-dependent by the same
+ * fail-closed rule: if it cannot be proven shareable with the world, it must
+ * not be cached.
  */
-export function isViewerIndependent(visibility: BlockVisibility): boolean {
-  return visibility === 'public';
+export function isViewerIndependent(visibility: BlockVisibility, conditions: BlockConditions): boolean {
+  return visibility === 'public' && !hasConditions(conditions);
 }

@@ -21,7 +21,7 @@
  * rows a caller has already decided to show.
  */
 import type { BlockKind, BlockVisibility, ProfileBlockRow } from '../db/types';
-import { AUDIENCES, isBlockVisibility, isViewerIndependent } from './audience';
+import { AUDIENCES, conditionsOfRow, isBlockVisibility, isViewerIndependent } from './audience';
 import { renderMfm } from './mfm';
 import { isSafeUrl } from './validate';
 import type { TranslateFn } from '../i18n';
@@ -83,7 +83,10 @@ function blockKindOf(row: ProfileBlockRow): BlockKind | null {
 export function cacheableBlocks(rows: readonly ProfileBlockRow[]): ProfileBlockRow[] {
   return rows.filter((row) => {
     const visibility = isBlockVisibility(row.visibility) ? row.visibility : null;
-    return visibility !== null && isViewerIndependent(visibility);
+    if (visibility === null) return false;
+    // A block with a `required_tag` or `min_follow_days` condition varies by
+    // viewer, so it cannot be baked into the shared anonymous copy.
+    return isViewerIndependent(visibility, conditionsOfRow(row));
   });
 }
 
@@ -149,17 +152,37 @@ function GalleryGrid(props: { items: readonly string[] }) {
   );
 }
 
-/** Owner-only marker naming the block's audience (mirrors the hidden-tag icon). */
+/**
+ * Owner-only marker naming the block's audience and any refining conditions
+ * (mirrors the hidden-tag icon). A block with a condition is no longer plain
+ * `public`, so it gets the "lock" glyph even when its base audience is public.
+ */
 function BlockAudienceMarker(props: { row: ProfileBlockRow; t: TranslateFn }) {
   const { row, t } = props;
   const visibility = isBlockVisibility(row.visibility) ? row.visibility : null;
   if (visibility === null) return null;
+  const conditions = conditionsOfRow(row);
+  const extra: { key: string; label: string }[] = [];
+  if (conditions.requiredTag !== null) {
+    extra.push({ key: 'tag', label: t('block_marker.requiredTag', { tag: conditions.requiredTag }) });
+  }
+  if (conditions.minFollowDays !== null) {
+    extra.push({
+      key: 'days',
+      label: t('block_marker.minFollowDays', { days: conditions.minFollowDays }),
+    });
+  }
   return (
-    <p class="mt-2 flex items-center gap-1 text-xs text-muted-foreground" data-block-audience>
+    <p class="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground" data-block-audience>
       <span class="material-symbols-outlined icon-xs" aria-hidden="true">
-        {visibility === 'public' ? 'public' : 'lock'}
+        {visibility === 'public' && extra.length === 0 ? 'public' : 'lock'}
       </span>
       {t('block_marker.audience', { audience: t(`block.audience.${visibility}`) })}
+      {extra.map((part) => (
+        <span key={part.key} class="text-foreground/70">
+          {part.label}
+        </span>
+      ))}
     </p>
   );
 }

@@ -399,6 +399,24 @@ export function isFollowing(
     .then((row) => row !== null);
 }
 
+/**
+ * Epoch ms `followerId` started following `followingId`, or null when they do
+ * not follow. Powers the per-block `minFollowDays` condition
+ * (`src/lib/audience.ts`) — the age of the follow edge, not the user's join
+ * date.
+ */
+export async function getFollowStartedAt(
+  db: D1Database,
+  followerId: string,
+  followingId: string,
+): Promise<number | null> {
+  const row = await db
+    .prepare('SELECT created_at AS started_at FROM follows WHERE follower_id = ? AND following_id = ?')
+    .bind(followerId, followingId)
+    .first<{ started_at: number }>();
+  return row ? row.started_at : null;
+}
+
 /** Idempotent: following the same user twice keeps a single row. */
 export async function follow(
   db: D1Database,
@@ -530,6 +548,10 @@ export const BLOCK_LIMITS = {
   maxBodyLength: 4000,
   maxGalleryItems: 12,
   maxGalleryItemLength: 500,
+  /** Max length of a `required_tag` value — same fold as any tag value. */
+  maxRequiredTagLength: 40,
+  /** Inclusive max for `minFollowDays`; over-cap values degrade to "no condition". */
+  maxMinFollowDays: 3650,
 } as const;
 
 const BLOCK_KINDS: ReadonlySet<string> = new Set(['text', 'gallery']);
@@ -584,6 +606,8 @@ interface NormalisedBlock {
   body: string | null;
   items: string | null;
   visibility: BlockVisibility;
+  requiredTag: string | null;
+  minFollowDays: number | null;
 }
 
 /** The block as it will be stored, or null when the input is unusable. */
@@ -595,14 +619,28 @@ function normaliseBlock(input: unknown): NormalisedBlock | null {
   const visibility = isBlockVisibility(block.visibility) ? block.visibility : null;
   if (!visibility) return null;
   const title = text(block.title, BLOCK_LIMITS.maxTitleLength) || null;
+  // The two optional conditions (BlockInput fields are camelCase): a blank
+  // value means "no condition". A bad min (negative, non-integer, over cap)
+  // degrades to "no condition" rather than a row the CHECK constraint rejects.
+  const requiredTag =
+    text(block.requiredTag, BLOCK_LIMITS.maxRequiredTagLength).trim().toLowerCase() || null;
+  const minFollowDays = clampMinFollowDays(block.minFollowDays);
   if (kind === 'text') {
     const body = text(block.body, BLOCK_LIMITS.maxBodyLength);
     if (!body) return null;
-    return { kind, title, body, items: null, visibility };
+    return { kind, title, body, items: null, visibility, requiredTag, minFollowDays };
   }
   const items = coerceGalleryItems(block.items);
   if (items === null) return null;
-  return { kind, title, body: null, items, visibility };
+  return { kind, title, body: null, items, visibility, requiredTag, minFollowDays };
+}
+
+/** Coerces a raw `min_follow_days` to an inclusive 0..cap integer, else null. */
+function clampMinFollowDays(value: unknown): number | null {
+  const n =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value.trim()) : NaN;
+  if (!Number.isInteger(n) || n < 0 || n > BLOCK_LIMITS.maxMinFollowDays) return null;
+  return n;
 }
 
 export async function listProfileBlocks(db: D1Database, userId: string): Promise<ProfileBlockRow[]> {
@@ -639,8 +677,9 @@ export async function replaceProfileBlocks(
       db
         .prepare(
           `INSERT INTO profile_blocks
-             (id, user_id, kind, title, body, items, visibility, sort_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, user_id, kind, title, body, items, visibility, required_tag,
+              min_follow_days, sort_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           newId(),
@@ -650,6 +689,8 @@ export async function replaceProfileBlocks(
           block.body,
           block.items,
           block.visibility,
+          block.requiredTag,
+          block.minFollowDays,
           index,
           ts,
           ts,

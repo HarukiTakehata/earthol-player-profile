@@ -111,7 +111,9 @@ export interface FieldInput {
  * A profile block as a caller supplies it. `user_id`, `id`, and the timestamps
  * are assigned by `replaceProfileBlocks` — never by the caller. A 'text' block
  * must carry a non-null `body`, a 'gallery' block a non-null `items` (a JSON
- * array string), matching the table's CHECK constraints.
+ * array string), matching the table's CHECK constraints. `requiredTag` and
+ * `minFollowDays` are the two optional conditions that refine `visibility`
+ * (see `src/lib/audience.ts`); both null means "no extra condition".
  */
 export interface BlockInput {
   kind: BlockKind;
@@ -119,6 +121,8 @@ export interface BlockInput {
   body: string | null;
   items: string | null;
   visibility: BlockVisibility;
+  requiredTag: string | null;
+  minFollowDays: number | null;
 }
 
 export interface ProfileBlockRow {
@@ -129,6 +133,10 @@ export interface ProfileBlockRow {
   body: string | null;
   items: string | null;
   visibility: string;
+  /** Normalised tag value the viewer must have, or null for no tag condition. */
+  required_tag: string | null;
+  /** Minimum whole days the viewer must have been following, or null for none. */
+  min_follow_days: number | null;
   sort_order: number;
   created_at: number;
   updated_at: number;
