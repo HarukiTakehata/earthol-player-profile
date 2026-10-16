@@ -21,7 +21,13 @@
  * rows a caller has already decided to show.
  */
 import type { BlockKind, BlockVisibility, ProfileBlockRow } from '../db/types';
-import { AUDIENCES, conditionsOfRow, isBlockVisibility, isViewerIndependent } from './audience';
+import {
+  AUDIENCES,
+  conditionsOfRow,
+  isBlockVisibility,
+  isViewerIndependent,
+  type BlockViewerLists,
+} from './audience';
 import { renderMfm } from './mfm';
 import { isSafeUrl } from './validate';
 import type { TranslateFn } from '../i18n';
@@ -71,62 +77,62 @@ function blockKindOf(row: ProfileBlockRow): BlockKind | null {
  * The rows that may be baked into the **shared** anonymous profile cache
  * (`profile:html:<locale>:<username>`, one copy served to every anonymous
  * visitor for 300s). This is the cache contract made explicit rather than
- * incidental: only blocks whose visibility is *provably* viewer-independent —
- * `isViewerIndependent` is true only for `'public'` — may enter that HTML, so
- * a future change to `canViewBlock` (say, widening `users` to anonymous
- * visitors) can never silently poison the shared copy. Filter here even
- * though anonymous viewers would fail the other audiences today.
+ * incidental: only blocks whose visibility and conditions are *provably*
+ * viewer- and time-independent — `isViewerIndependent` is true only for a
+ * `public` block with no conditions at all — may enter that HTML, so a future
+ * change to `canViewBlock` can never silently poison the shared copy. Filter
+ * here even though anonymous viewers would fail the other audiences today.
  *
+ * The allow/deny lists live in a child table, so the caller passes the grouped
+ * map in; a block with any listed user is viewer-dependent and is filtered out.
  * The result is derived from the profiled user's rows only — never from the
  * viewer, which does not exist on this path.
  */
-export function cacheableBlocks(rows: readonly ProfileBlockRow[]): ProfileBlockRow[] {
+export function cacheableBlocks(
+  rows: readonly ProfileBlockRow[],
+  viewers: ReadonlyMap<string, BlockViewerLists> = new Map(),
+): ProfileBlockRow[] {
   return rows.filter((row) => {
     const visibility = isBlockVisibility(row.visibility) ? row.visibility : null;
     if (visibility === null) return false;
-    // A block with a `required_tag` or `min_follow_days` condition varies by
-    // viewer, so it cannot be baked into the shared anonymous copy.
-    return isViewerIndependent(visibility, conditionsOfRow(row));
+    // Tags, user lists, age gates, and a time window all vary by viewer or time,
+    // so any of them keeps the block out of the shared anonymous copy.
+    return isViewerIndependent(visibility, conditionsOfRow(row, viewers.get(row.id)));
   });
 }
 
 /**
- * Renders the blocks that belong inside the profile card, as one fragment.
- * Returns `null` when there is nothing to show — an empty block list renders
- * exactly as before (no empty shell, no layout shift). `isOwner` adds the
- * small audience marker so owners can tell what other viewers cannot see.
+ * One profile block as a **standalone card**. The profile composes these (and
+ * the key/value fields card) into an ordered list, so this component owns only
+ * a single block's markup — never a wrapping section. Returns `null` when the
+ * row's kind is unusable. `isOwner` adds the audience marker so owners can tell
+ * what other viewers cannot see.
  */
-export function ProfileBlocks(props: {
-  rows: readonly ProfileBlockRow[];
+export function ProfileBlockCard(props: {
+  row: ProfileBlockRow;
   isOwner: boolean;
+  viewers?: ReadonlyMap<string, BlockViewerLists>;
   t: TranslateFn;
 }) {
-  const { rows, isOwner, t } = props;
-  if (rows.length === 0) return null;
+  const { row, isOwner, viewers, t } = props;
+  const kind = blockKindOf(row);
+  if (kind === null) return null;
 
   return (
-    <div class="mt-5 space-y-4" data-blocks>
-      {rows.map((row, index) => {
-        const kind = blockKindOf(row);
-        if (kind === null) return null;
-        return (
-          <div key={row.id ?? index} class="rounded-2xl bg-muted/40 p-4" data-block>
-            {row.title ? <h3 class="break-words text-sm font-bold tracking-tight">{row.title}</h3> : null}
-            {kind === 'text' ? (
-              row.body ? (
-                <div
-                  class="mfm-body mt-1 break-words text-sm leading-relaxed text-foreground/85"
-                  data-block-body
-                  dangerouslySetInnerHTML={{ __html: renderMfm(row.body) }}
-                />
-              ) : null
-            ) : (
-              <GalleryGrid items={parseGalleryItems(row.items)} />
-            )}
-            {isOwner ? <BlockAudienceMarker row={row} t={t} /> : null}
-          </div>
-        );
-      })}
+    <div class="card p-5" data-block>
+      {row.title ? <h3 class="break-words text-sm font-bold tracking-tight">{row.title}</h3> : null}
+      {kind === 'text' ? (
+        row.body ? (
+          <div
+            class="mfm-body mt-1 break-words text-sm leading-relaxed text-foreground/85"
+            data-block-body
+            dangerouslySetInnerHTML={{ __html: renderMfm(row.body) }}
+          />
+        ) : null
+      ) : (
+        <GalleryGrid items={parseGalleryItems(row.items)} />
+      )}
+      {isOwner ? <BlockAudienceMarker row={row} lists={viewers?.get(row.id)} t={t} /> : null}
     </div>
   );
 }
@@ -157,20 +163,60 @@ function GalleryGrid(props: { items: readonly string[] }) {
  * (mirrors the hidden-tag icon). A block with a condition is no longer plain
  * `public`, so it gets the "lock" glyph even when its base audience is public.
  */
-function BlockAudienceMarker(props: { row: ProfileBlockRow; t: TranslateFn }) {
-  const { row, t } = props;
+function BlockAudienceMarker(props: {
+  row: ProfileBlockRow;
+  lists?: BlockViewerLists;
+  t: TranslateFn;
+}) {
+  const { row, lists, t } = props;
   const visibility = isBlockVisibility(row.visibility) ? row.visibility : null;
   if (visibility === null) return null;
-  const conditions = conditionsOfRow(row);
+  const conditions = conditionsOfRow(row, lists);
   const extra: { key: string; label: string }[] = [];
-  if (conditions.requiredTag !== null) {
-    extra.push({ key: 'tag', label: t('block_marker.requiredTag', { tag: conditions.requiredTag }) });
+  if (conditions.relation !== null) {
+    extra.push({ key: 'relation', label: t(`block.relation.${conditions.relation}`) });
+  }
+  if (conditions.requiredTags.length > 0) {
+    extra.push({
+      key: 'tags',
+      label: t(
+        conditions.tagMatch === 'all' ? 'block_marker.requiredTagsAll' : 'block_marker.requiredTagsAny',
+        { tags: conditions.requiredTags.join(', ') },
+      ),
+    });
+  }
+  if (conditions.excludedTags.length > 0) {
+    extra.push({
+      key: 'excluded',
+      label: t('block_marker.excludedTags', { tags: conditions.excludedTags.join(', ') }),
+    });
+  }
+  if (conditions.allowUserIds.length > 0) {
+    extra.push({
+      key: 'allow',
+      label: t('block_marker.allowUsers', { count: String(conditions.allowUserIds.length) }),
+    });
+  }
+  if (conditions.denyUserIds.length > 0) {
+    extra.push({
+      key: 'deny',
+      label: t('block_marker.denyUsers', { count: String(conditions.denyUserIds.length) }),
+    });
   }
   if (conditions.minFollowDays !== null) {
     extra.push({
       key: 'days',
-      label: t('block_marker.minFollowDays', { days: conditions.minFollowDays }),
+      label: t('block_marker.minFollowDays', { days: String(conditions.minFollowDays) }),
     });
+  }
+  if (conditions.minAccountAgeDays !== null) {
+    extra.push({
+      key: 'age',
+      label: t('block_marker.minAccountAgeDays', { days: String(conditions.minAccountAgeDays) }),
+    });
+  }
+  if (conditions.visibleFrom !== null || conditions.visibleUntil !== null) {
+    extra.push({ key: 'window', label: t('block_marker.window') });
   }
   return (
     <p class="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground" data-block-audience>

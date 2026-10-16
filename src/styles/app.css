@@ -222,6 +222,17 @@
   display: flex;
 }
 
+/* A `.field` on a MULTI-LINE control must not inherit the pill radius: the
+   layered `.field` rule uses `rounded-full`, which on a tall <textarea> draws a
+   stadium whose top/bottom arcs bulge into the text. Every `.field` textarea
+   gets a rounded rectangle here instead, so a newly added textarea can never
+   forget a per-element `rounded-2xl` (that is how this broke repeatedly).
+   Unlayered, so it outranks both the layered `.field` and the `rounded-*`
+   utilities; single-line `.field` inputs/selects keep their pill. */
+textarea.field {
+  border-radius: 1rem;
+}
+
 /* Tag autocomplete dropdown (created by TAG_AUTOCOMPLETE_SCRIPT) */
 .tag-suggest {
   position: absolute;

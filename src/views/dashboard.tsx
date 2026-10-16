@@ -1,6 +1,9 @@
 /** Console workspace: profile sheet, key/value fields, and tags. */
+import type { Child } from 'hono/jsx';
 import { Layout } from './layout';
 import type {
+  BlockRelation,
+  BlockViewerRow,
   FieldRow,
   IdentityRow,
   ProfileBlockRow,
@@ -13,7 +16,13 @@ import { THEMES, VISIBILITIES } from '../lib/themes';
 import { tagChipClasses } from '../lib/tags';
 import { MAX_AVATAR_BYTES } from '../lib/storage';
 import { BLOCK_LIMITS } from '../db/queries';
-import { isBlockVisibility } from '../lib/audience';
+import {
+  isBlockVisibility,
+  parseStoredList,
+  relationOf,
+  RELATIONS,
+  tagMatchOf,
+} from '../lib/audience';
 import type { BlockVisibility } from '../db/types';
 import { audienceOptions, blockKindLabel, parseGalleryItems } from '../lib/blocks';
 import { DASHBOARD_SECTIONS, type DashboardSection } from '../lib/dashboard-nav';
@@ -46,6 +55,10 @@ export interface DashboardProps {
   tagCategories: TagCategoryRow[];
   /** Saved profile blocks for the Blocks editor (`blocks` section only). */
   blocks?: ProfileBlockRow[];
+  /** Per-block allow/deny rows, for the Blocks editor's username fields. */
+  blockViewers?: BlockViewerRow[];
+  /** Where the non-removable key/value row sits in the Blocks editor. */
+  fieldsPosition?: number;
   identities: IdentityRow[];
   githubEnabled: boolean;
   magicEnabled: boolean;
@@ -82,6 +95,8 @@ export function Dashboard({
   tags,
   tagCategories,
   blocks,
+  blockViewers,
+  fieldsPosition,
   identities,
   githubEnabled,
   magicEnabled,
@@ -100,6 +115,23 @@ export function Dashboard({
   const githubIdentity = identities.find((identity) => identity.provider === 'github');
   const emailIdentity = identities.find((identity) => identity.provider === 'email');
   const sectionMeta = DASHBOARD_SECTIONS.find((item) => item.section === section);
+
+  // The Blocks editor lists the blocks and one non-removable row for the
+  // key/value card, in the stored order — moving rows is how the profile's
+  // section order is set. The row carries `slot=fields` so the route can read
+  // its position out of the submitted row order.
+  const blockList = section === 'blocks' ? blocks ?? [] : [];
+  const fieldsSlotAt = Math.max(0, Math.min(fieldsPosition ?? 0, blockList.length));
+  const blockEditorItems: Child[] = [];
+  blockList.forEach((block, index) => {
+    if (index === fieldsSlotAt) blockEditorItems.push(<FieldsSlotRow key="fields-slot" t={t} />);
+    blockEditorItems.push(
+      <BlockEditorRow key={block.id} block={block} viewers={blockViewers} t={t} />,
+    );
+  });
+  if (fieldsSlotAt >= blockList.length && section === 'blocks') {
+    blockEditorItems.push(<FieldsSlotRow key="fields-slot" t={t} />);
+  }
 
   return (
     <Layout
@@ -148,7 +180,7 @@ export function Dashboard({
               id="ai-input"
               rows={2}
               placeholder={t('dash.ai.placeholder')}
-              class="field min-h-11 flex-1 resize-none rounded-2xl"
+              class="field min-h-11 flex-1 resize-none"
             ></textarea>
             <button type="button" data-ai-send class="btn-primary shrink-0">
               {t('dash.ai.send')}
@@ -300,7 +332,7 @@ export function Dashboard({
               name="bio"
               rows={5}
               maxlength={1000}
-              class="w-full rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/70 focus:border-primary focus:bg-card focus:ring-2 focus:ring-ring/30"
+              class="field w-full"
             >
               {user.bio ?? ''}
             </textarea>
@@ -599,22 +631,20 @@ export function Dashboard({
           </div>
 
           <div data-repeater-list>
-            {(blocks ?? []).map((block) => (
-              <BlockEditorRow key={block.id} block={block} t={t} />
-            ))}
+            {blockEditorItems}
           </div>
 
           <p
-            data-repeater-empty
+            data-block-empty
             class={`rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground ${
-              blocks && blocks.length ? 'hidden' : ''
+              blockList.length ? 'hidden' : ''
             }`}
           >
             {t('dash.noBlocks')}
           </p>
 
           <template data-repeater-template>
-            <BlockEditorRow block={null} t={t} />
+            <BlockEditorRow block={null} viewers={blockViewers} t={t} />
           </template>
 
           <div class="mt-5 flex flex-wrap gap-3">
@@ -1146,6 +1176,94 @@ function editorVisibility(row: ProfileBlockRow | null): BlockVisibility {
   return row && isBlockVisibility(row.visibility) ? row.visibility : 'public';
 }
 
+/** Formats an epoch-ms timestamp as a `datetime-local` value (UTC), or ''. */
+function toDateTimeLocal(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
+  const date = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}` +
+    `T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
+  );
+}
+
+/** The usernames listed against one block for `allow`/`deny`, one per line. */
+function viewerNames(
+  viewers: readonly BlockViewerRow[] | undefined,
+  blockId: string | null,
+  kind: 'allow' | 'deny',
+): string {
+  if (!blockId || !viewers) return '';
+  return viewers
+    .filter((row) => row.block_id === blockId && row.kind === kind && Boolean(row.username))
+    .map((row) => row.username as string)
+    .join('\n');
+}
+
+/**
+ * The one non-removable row of the Blocks editor: the key/value ("fields")
+ * card. It has no fields of its own — its content is edited on
+ * `/dashboard/fields` — and it deliberately has **no remove button**, so the
+ * only operations are the up/down arrows that set where the card appears among
+ * the blocks. It still carries `data-repeater-row` so REPEATER_SCRIPT moves it.
+ */
+function FieldsSlotRow({ t }: { t: TranslateFn }) {
+  return (
+    <div
+      class="mb-4 rounded-2xl border border-dashed border-border bg-card/60 p-4"
+      data-repeater-row
+      data-slot="fields"
+    >
+      <input type="hidden" name="slot" value="fields" />
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+          <span class="material-symbols-outlined" aria-hidden="true">
+            list_alt
+          </span>
+        </span>
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-semibold">{t('dash.block.fieldsSlotTitle')}</p>
+          <p class="mt-0.5 text-xs text-muted-foreground">{t('dash.block.fieldsSlotHint')}</p>
+        </div>
+        <a href="/dashboard/fields" class="btn-outline shrink-0">
+          {t('dash.block.fieldsSlotEdit')}
+        </a>
+        <div class="flex shrink-0 items-center gap-2">
+          <span
+            class="material-symbols-outlined text-muted-foreground"
+            aria-hidden="true"
+            title={t('dash.block.fieldsSlotLocked')}
+          >
+            lock
+          </span>
+          <button
+            type="button"
+            data-repeater-move-up
+            class="btn-icon shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label={t('dash.block.moveUp')}
+            title={t('dash.block.moveUp')}
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">
+              arrow_upward
+            </span>
+          </button>
+          <button
+            type="button"
+            data-repeater-move-down
+            class="btn-icon shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label={t('dash.block.moveDown')}
+            title={t('dash.block.moveDown')}
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">
+              arrow_downward
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * One repeater row of the Blocks editor. `block === null` is the blank row
  * cloned from `<template data-repeater-template>` by REPEATER_SCRIPT. Keeping
@@ -1154,15 +1272,31 @@ function editorVisibility(row: ProfileBlockRow | null): BlockVisibility {
  * the CSS in app.css (`[data-block-kind]` toggles body/items); both submit so
  * a half-empty row is still caught server-side.
  */
-function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }) {
-  const { block, t } = props;
+function BlockEditorRow(props: {
+  block: ProfileBlockRow | null;
+  viewers?: readonly BlockViewerRow[];
+  t: TranslateFn;
+}) {
+  const { block, viewers, t } = props;
   const kind: 'text' | 'gallery' =
     block?.kind === 'text' || block?.kind === 'gallery' ? block.kind : 'text';
   const visibility = editorVisibility(block);
   const items = kind === 'gallery' ? parseGalleryItems(block?.items ?? null).join('\n') : '';
+  const requiredTags = parseStoredList(block?.rule_required_tags ?? null).join('\n');
+  const excludedTags = parseStoredList(block?.rule_excluded_tags ?? null).join('\n');
+  const tagMatch = tagMatchOf(block?.rule_tag_match);
+  const relation: BlockRelation | '' = relationOf(block?.rule_relation) ?? '';
+  const allowNames = viewerNames(viewers, block?.id ?? null, 'allow');
+  const denyNames = viewerNames(viewers, block?.id ?? null, 'deny');
 
   return (
-    <div class="mb-4 rounded-2xl bg-muted/40 p-4" data-repeater-row data-block-kind={kind}>
+    <div
+      class="mb-4 rounded-2xl bg-muted/40 p-4"
+      data-repeater-row
+      data-block-row
+      data-block-kind={kind}
+    >
+      <input type="hidden" name="slot" value="block" />
       <div class="flex flex-col gap-2 sm:flex-row">
         <select
           name="kind"
@@ -1233,30 +1367,182 @@ function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }
       </div>
 
       <div data-block-conditions class="mt-3 rounded-xl bg-card/50 p-3">
-        <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <div class="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {t('dash.block.conditions')}
         </div>
-        <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <input
-            name="required_tag"
-            value={block?.required_tag ?? ''}
-            placeholder={t('dash.block.requiredTagPlaceholder')}
-            maxlength={BLOCK_LIMITS.maxRequiredTagLength}
-            autocomplete="off"
-            class="field sm:flex-1"
-            aria-label={t('dash.block.requiredTag')}
-          />
-          <input
-            name="min_follow_days"
-            type="number"
-            min={0}
-            step={1}
-            value={block?.min_follow_days ?? ''}
-            placeholder={t('dash.block.minFollowDaysPlaceholder')}
-            class="field sm:w-64"
-            aria-label={t('dash.block.minFollowDays')}
-          />
+
+        {/* Follow & account: the relational audience plus the two age gates.
+            Grouped so the three "who counts" rules read as one decision. */}
+        <div class="space-y-2" data-rule-group="relation">
+          <p class="text-xs font-medium text-foreground/70">{t('dash.block.groupRelation')}</p>
+          <div class="grid gap-3 sm:grid-cols-3">
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.relation')}</span>
+              <select name="relation" class="field w-full" aria-label={t('dash.block.relation')}>
+                <option value="" selected={relation === ''}>
+                  {t('dash.block.relationNone')}
+                </option>
+                {RELATIONS.map((value) => (
+                  <option value={value} selected={value === relation}>
+                    {t(`block.relation.${value}`)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.minFollowDays')}</span>
+              <input
+                name="min_follow_days"
+                type="number"
+                min={0}
+                max={BLOCK_LIMITS.maxMinDays}
+                step={1}
+                value={block?.rule_min_follow_days ?? ''}
+                placeholder={t('dash.block.minFollowDaysPlaceholder')}
+                class="field w-full"
+                aria-label={t('dash.block.minFollowDays')}
+              />
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.minAccountAgeDays')}</span>
+              <input
+                name="min_account_age_days"
+                type="number"
+                min={0}
+                max={BLOCK_LIMITS.maxMinDays}
+                step={1}
+                value={block?.rule_min_account_age_days ?? ''}
+                placeholder={t('dash.block.minAccountAgeDaysPlaceholder')}
+                class="field w-full"
+                aria-label={t('dash.block.minAccountAgeDays')}
+              />
+            </label>
+          </div>
         </div>
+
+        {/* Tags: the required list, how it is matched, and the exclusions. */}
+        <div class="mt-3 space-y-2" data-rule-group="tags">
+          <p class="text-xs font-medium text-foreground/70">{t('dash.block.groupTags')}</p>
+          <div class="grid gap-3 sm:grid-cols-3">
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.requiredTags')}</span>
+              <textarea
+                name="required_tags"
+                rows={2}
+                placeholder={t('dash.block.requiredTagsPlaceholder')}
+                autocomplete="off"
+                class="field w-full font-mono text-xs"
+                aria-label={t('dash.block.requiredTags')}
+              >
+                {requiredTags}
+              </textarea>
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.tagMatch')}</span>
+              <select name="tag_match" class="field w-full" aria-label={t('dash.block.tagMatch')}>
+                <option value="any" selected={tagMatch === 'any'}>
+                  {t('dash.block.tagMatchAny')}
+                </option>
+                <option value="all" selected={tagMatch === 'all'}>
+                  {t('dash.block.tagMatchAll')}
+                </option>
+              </select>
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.excludedTags')}</span>
+              <textarea
+                name="excluded_tags"
+                rows={2}
+                placeholder={t('dash.block.excludedTagsPlaceholder')}
+                autocomplete="off"
+                class="field w-full font-mono text-xs"
+                aria-label={t('dash.block.excludedTags')}
+              >
+                {excludedTags}
+              </textarea>
+            </label>
+          </div>
+        </div>
+
+        {/* Time window: the two ends of the same window, side by side. */}
+        <div class="mt-3 space-y-2" data-rule-group="window">
+          <p class="text-xs font-medium text-foreground/70">{t('dash.block.groupWindow')}</p>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.visibleFrom')}</span>
+              <input
+                name="visible_from"
+                type="datetime-local"
+                value={toDateTimeLocal(block?.rule_visible_from)}
+                class="field w-full"
+                aria-label={t('dash.block.visibleFrom')}
+              />
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.visibleUntil')}</span>
+              <input
+                name="visible_until"
+                type="datetime-local"
+                value={toDateTimeLocal(block?.rule_visible_until)}
+                class="field w-full"
+                aria-label={t('dash.block.visibleUntil')}
+              />
+            </label>
+          </div>
+        </div>
+
+        {/* Named people: the allow list narrows, the deny list excludes. */}
+        <div class="mt-3 space-y-2" data-rule-group="users">
+          <p class="text-xs font-medium text-foreground/70">{t('dash.block.groupUsers')}</p>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div data-user-picker class="relative flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.allowUsers')}</span>
+              <input
+                type="text"
+                data-user-input
+                placeholder={t('dash.block.userSearchPlaceholder')}
+                autocomplete="off"
+                class="field w-full"
+                aria-label={t('dash.block.allowUsers')}
+              />
+              <textarea
+                name="allow_users"
+                data-user-list
+                rows={2}
+                placeholder={t('dash.block.usersPlaceholder')}
+                class="field w-full font-mono text-xs"
+                aria-label={t('dash.block.allowUsers')}
+              >
+                {allowNames}
+              </textarea>
+            </div>
+            <div data-user-picker class="relative flex flex-col gap-1">
+              <span class="text-xs text-muted-foreground">{t('dash.block.denyUsers')}</span>
+              <input
+                type="text"
+                data-user-input
+                placeholder={t('dash.block.userSearchPlaceholder')}
+                autocomplete="off"
+                class="field w-full"
+                aria-label={t('dash.block.denyUsers')}
+              />
+              <textarea
+                name="deny_users"
+                data-user-list
+                rows={2}
+                placeholder={t('dash.block.usersPlaceholder')}
+                class="field w-full font-mono text-xs"
+                aria-label={t('dash.block.denyUsers')}
+              >
+                {denyNames}
+              </textarea>
+            </div>
+          </div>
+        </div>
+
+        <p class="mt-3 text-xs leading-relaxed text-muted-foreground">
+          {t('dash.block.conditionsHint')}
+        </p>
       </div>
 
       <div data-block-text class="mt-2">
@@ -1265,7 +1551,7 @@ function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }
           rows={3}
           maxlength={BLOCK_LIMITS.maxBodyLength}
           placeholder={t('dash.block.bodyPlaceholder')}
-          class="field w-full rounded-2xl"
+          class="field w-full"
           aria-label={t('dash.block.body')}
         >
           {block?.body ?? ''}
@@ -1280,7 +1566,7 @@ function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }
           name="items"
           rows={3}
           placeholder={t('dash.block.itemsPlaceholder')}
-          class="field w-full rounded-2xl font-mono text-xs"
+          class="field w-full font-mono text-xs"
           aria-label={t('dash.block.items')}
         >
           {items}

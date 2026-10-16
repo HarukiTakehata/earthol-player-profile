@@ -6,6 +6,8 @@
 import type {
   BlockInput,
   BlockKind,
+  BlockRelation,
+  BlockViewerRow,
   BlockVisibility,
   FieldInput,
   FieldRow,
@@ -15,11 +17,13 @@ import type {
   ProfileInput,
   TagCategoryRow,
   TagInput,
+  TagMatch,
   TotpFactorRow,
   UserRow,
   UserTagRow,
 } from './types';
 import { text } from '../lib/validate';
+import { isBlockRelation, tagMatchOf } from '../lib/audience';
 
 export function newId(): string {
   return crypto.randomUUID();
@@ -548,10 +552,15 @@ export const BLOCK_LIMITS = {
   maxBodyLength: 4000,
   maxGalleryItems: 12,
   maxGalleryItemLength: 500,
-  /** Max length of a `required_tag` value — same fold as any tag value. */
-  maxRequiredTagLength: 40,
-  /** Inclusive max for `minFollowDays`; over-cap values degrade to "no condition". */
-  maxMinFollowDays: 3650,
+  /** Max length of one value in `required_tags` / `excluded_tags` — same fold as any tag value. */
+  maxTagValueLength: 40,
+  /** Max entries per tag list. */
+  maxRequiredTags: 10,
+  maxExcludedTags: 10,
+  /** Max ids across a block's allow + deny lists combined. */
+  maxListedUsers: 50,
+  /** Inclusive max for `minFollowDays` / `minAccountAgeDays`; over-cap values degrade to "no condition". */
+  maxMinDays: 3650,
 } as const;
 
 const BLOCK_KINDS: ReadonlySet<string> = new Set(['text', 'gallery']);
@@ -599,15 +608,99 @@ function coerceGalleryItems(value: unknown): string | null {
   }
 }
 
+/** The rules of one block after normalisation — exactly what gets stored. */
+interface NormalisedRules {
+  relation: BlockRelation | null;
+  requiredTags: string[];
+  tagMatch: TagMatch;
+  excludedTags: string[];
+  minFollowDays: number | null;
+  minAccountAgeDays: number | null;
+  visibleFrom: number | null;
+  visibleUntil: number | null;
+}
+
 /** A block after normalisation — exactly what gets stored, all limits applied. */
 interface NormalisedBlock {
+  id: string;
   kind: BlockKind;
   title: string | null;
   body: string | null;
   items: string | null;
   visibility: BlockVisibility;
-  requiredTag: string | null;
-  minFollowDays: number | null;
+  rules: NormalisedRules;
+  allowUserIds: string[];
+  denyUserIds: string[];
+}
+
+/** True when every rule is unset (so no `profile_block_rules` row is written). */
+function rulesAreEmpty(rules: NormalisedRules): boolean {
+  return (
+    rules.relation === null &&
+    rules.requiredTags.length === 0 &&
+    rules.excludedTags.length === 0 &&
+    rules.minFollowDays === null &&
+    rules.minAccountAgeDays === null &&
+    rules.visibleFrom === null &&
+    rules.visibleUntil === null
+  );
+}
+
+/**
+ * Normalises one tag list (all values trimmed + lower-cased, deduped, capped).
+ * Accepts an array; a lone string counts as a single value, never its
+ * characters. Mirrors `normaliseTagValue` (`src/lib/audience.ts`).
+ */
+function normaliseTagList(value: unknown, max: number): string[] {
+  const raw = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+  const out: string[] = [];
+  for (const item of raw) {
+    const normalised = text(item, BLOCK_LIMITS.maxTagValueLength).trim().toLowerCase();
+    if (normalised === '' || out.includes(normalised)) continue;
+    out.push(normalised);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** Normalises one id list (trimmed, deduped, capped). Non-strings are dropped. */
+function normaliseIdList(value: unknown, max: number): string[] {
+  const raw = Array.isArray(value) ? value : [];
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const id = item.trim();
+    if (id === '' || out.includes(id)) continue;
+    out.push(id);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/**
+ * Normalises one block's rules. A blank/bad scalar means "no condition" (the
+ * rule is simply not enforced), never a row the CHECK constraints reject.
+ */
+function normaliseRules(value: unknown): NormalisedRules {
+  const raw = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  let visibleFrom = clampTimestamp(raw.visibleFrom);
+  let visibleUntil = clampTimestamp(raw.visibleUntil);
+  if (visibleFrom !== null && visibleUntil !== null && visibleFrom >= visibleUntil) {
+    // An inverted window would make the block permanently invisible and violate
+    // the table CHECK; drop the window rather than store a rejected row.
+    visibleFrom = null;
+    visibleUntil = null;
+  }
+  return {
+    relation: isBlockRelation(raw.relation) ? raw.relation : null,
+    requiredTags: normaliseTagList(raw.requiredTags, BLOCK_LIMITS.maxRequiredTags),
+    tagMatch: tagMatchOf(raw.tagMatch),
+    excludedTags: normaliseTagList(raw.excludedTags, BLOCK_LIMITS.maxExcludedTags),
+    minFollowDays: clampMinDays(raw.minFollowDays),
+    minAccountAgeDays: clampMinDays(raw.minAccountAgeDays),
+    visibleFrom,
+    visibleUntil,
+  };
 }
 
 /** The block as it will be stored, or null when the input is unusable. */
@@ -619,33 +712,76 @@ function normaliseBlock(input: unknown): NormalisedBlock | null {
   const visibility = isBlockVisibility(block.visibility) ? block.visibility : null;
   if (!visibility) return null;
   const title = text(block.title, BLOCK_LIMITS.maxTitleLength) || null;
-  // The two optional conditions (BlockInput fields are camelCase): a blank
-  // value means "no condition". A bad min (negative, non-integer, over cap)
-  // degrades to "no condition" rather than a row the CHECK constraint rejects.
-  const requiredTag =
-    text(block.requiredTag, BLOCK_LIMITS.maxRequiredTagLength).trim().toLowerCase() || null;
-  const minFollowDays = clampMinFollowDays(block.minFollowDays);
+  const rules = normaliseRules(block.rules);
+  // A deny entry beats an overlapping allow entry (the composite PK forbids a
+  // user from being in both lists).
+  const denyUserIds = normaliseIdList(block.denyUserIds, BLOCK_LIMITS.maxListedUsers);
+  const allowUserIds = normaliseIdList(block.allowUserIds, BLOCK_LIMITS.maxListedUsers).filter(
+    (id) => !denyUserIds.includes(id),
+  );
+  const id = newId();
   if (kind === 'text') {
     const body = text(block.body, BLOCK_LIMITS.maxBodyLength);
     if (!body) return null;
-    return { kind, title, body, items: null, visibility, requiredTag, minFollowDays };
+    return { id, kind, title, body, items: null, visibility, rules, allowUserIds, denyUserIds };
   }
   const items = coerceGalleryItems(block.items);
   if (items === null) return null;
-  return { kind, title, body: null, items, visibility, requiredTag, minFollowDays };
+  return { id, kind, title, body: null, items, visibility, rules, allowUserIds, denyUserIds };
 }
 
-/** Coerces a raw `min_follow_days` to an inclusive 0..cap integer, else null. */
-function clampMinFollowDays(value: unknown): number | null {
+/** Coerces a raw day count to an inclusive 0..cap integer, else null. */
+function clampMinDays(value: unknown): number | null {
   const n =
     typeof value === 'number' ? value : typeof value === 'string' ? Number(value.trim()) : NaN;
-  if (!Number.isInteger(n) || n < 0 || n > BLOCK_LIMITS.maxMinFollowDays) return null;
+  if (!Number.isInteger(n) || n < 0 || n > BLOCK_LIMITS.maxMinDays) return null;
   return n;
 }
 
+/** Coerces a raw epoch-ms timestamp to a non-negative integer, else null. */
+function clampTimestamp(value: unknown): number | null {
+  const n =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value.trim()) : NaN;
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/**
+ * The subset of `ids` that actually exist in `users`. Used before writing
+ * `profile_block_viewers` so a stale or hostile id can never trip the FK and
+ * turn a save into a 500 — an unknown id is simply dropped.
+ */
+async function filterExistingUserIds(db: D1Database, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const placeholders = ids.map(() => '?').join(', ');
+  const result = await db
+    .prepare(`SELECT id FROM users WHERE id IN (${placeholders})`)
+    .bind(...ids)
+    .all<{ id: string }>();
+  return new Set((result.results ?? []).map((row) => row.id));
+}
+
+/**
+ * A user's blocks, each LEFT JOINed with its `profile_block_rules` satellite so
+ * the rule values arrive on the same row as `rule_*` (null when the block has
+ * none). One query keeps the public render path to a single D1 round-trip.
+ */
 export async function listProfileBlocks(db: D1Database, userId: string): Promise<ProfileBlockRow[]> {
   const result = await db
-    .prepare('SELECT * FROM profile_blocks WHERE user_id = ? ORDER BY sort_order ASC, created_at ASC')
+    .prepare(
+      `SELECT b.*,
+              r.relation             AS rule_relation,
+              r.required_tags        AS rule_required_tags,
+              r.tag_match            AS rule_tag_match,
+              r.excluded_tags        AS rule_excluded_tags,
+              r.min_follow_days      AS rule_min_follow_days,
+              r.min_account_age_days AS rule_min_account_age_days,
+              r.visible_from         AS rule_visible_from,
+              r.visible_until        AS rule_visible_until
+       FROM profile_blocks b
+       LEFT JOIN profile_block_rules r ON r.block_id = b.id
+       WHERE b.user_id = ?
+       ORDER BY b.sort_order ASC, b.created_at ASC`,
+    )
     .bind(userId)
     .all<ProfileBlockRow>();
   return result.results ?? [];
@@ -656,7 +792,11 @@ export async function listProfileBlocks(db: D1Database, userId: string): Promise
  * `replaceFields`). Never throws on hostile input: invalid kinds/visibilities,
  * over-limit lists, oversized text, empty text bodies, and unusable gallery
  * items are dropped or normalised instead. `sort_order` is the index of the
- * surviving entry, so the stored list is always compact.
+ * surviving entry, so the stored list is always compact. Each block's rules go
+ * into the `profile_block_rules` satellite (only when it carries any rule) and
+ * its allow/deny lists into `profile_block_viewers`; the `DELETE` below cascades
+ * both away first, so the rewrite is complete. Ids that no longer exist in
+ * `users` are dropped before the insert, so the FK can never fail.
  */
 export async function replaceProfileBlocks(
   db: D1Database,
@@ -670,6 +810,12 @@ export async function replaceProfileBlocks(
     if (normalised.length >= BLOCK_LIMITS.maxBlocks) break;
     normalised.push(parsed);
   }
+
+  const candidateIds = [
+    ...new Set(normalised.flatMap((block) => [...block.allowUserIds, ...block.denyUserIds])),
+  ];
+  const existingIds = await filterExistingUserIds(db, candidateIds);
+
   const ts = now();
   const statements = [db.prepare('DELETE FROM profile_blocks WHERE user_id = ?').bind(userId)];
   normalised.forEach((block, index) => {
@@ -677,27 +823,160 @@ export async function replaceProfileBlocks(
       db
         .prepare(
           `INSERT INTO profile_blocks
-             (id, user_id, kind, title, body, items, visibility, required_tag,
-              min_follow_days, sort_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, user_id, kind, title, body, items, visibility, sort_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
-          newId(),
+          block.id,
           userId,
           block.kind,
           block.title,
           block.body,
           block.items,
           block.visibility,
-          block.requiredTag,
-          block.minFollowDays,
           index,
           ts,
           ts,
         ),
     );
+    if (!rulesAreEmpty(block.rules)) {
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO profile_block_rules
+               (block_id, relation, required_tags, tag_match, excluded_tags,
+                min_follow_days, min_account_age_days, visible_from, visible_until)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(
+            block.id,
+            block.rules.relation,
+            block.rules.requiredTags.length > 0 ? JSON.stringify(block.rules.requiredTags) : null,
+            block.rules.tagMatch,
+            block.rules.excludedTags.length > 0 ? JSON.stringify(block.rules.excludedTags) : null,
+            block.rules.minFollowDays,
+            block.rules.minAccountAgeDays,
+            block.rules.visibleFrom,
+            block.rules.visibleUntil,
+          ),
+      );
+    }
+    for (const [ids, kind] of [
+      [block.allowUserIds, 'allow'],
+      [block.denyUserIds, 'deny'],
+    ] as const) {
+      for (const id of ids) {
+        if (!existingIds.has(id)) continue;
+        statements.push(
+          db
+            .prepare(
+              'INSERT INTO profile_block_viewers (block_id, user_id, kind) VALUES (?, ?, ?)',
+            )
+            .bind(block.id, id, kind),
+        );
+      }
+    }
   });
   await db.batch(statements);
+}
+
+/**
+ * Where the key/value fields card sits among the user's blocks, as the number
+ * of blocks before it. Absent row (or an unusable value) means 0. The caller
+ * clamps it to the block count, so a stale position never throws a render off.
+ */
+export async function getProfileLayout(db: D1Database, userId: string): Promise<number> {
+  const row = await db
+    .prepare('SELECT fields_position FROM profile_layout WHERE user_id = ?')
+    .bind(userId)
+    .first<{ fields_position: number }>();
+  const position = row?.fields_position;
+  return typeof position === 'number' && Number.isInteger(position) && position >= 0 ? position : 0;
+}
+
+/** Upserts the fields-card position (one row per user). */
+export async function setProfileLayout(
+  db: D1Database,
+  userId: string,
+  fieldsPosition: number,
+): Promise<void> {
+  const position = Number.isInteger(fieldsPosition) && fieldsPosition >= 0 ? fieldsPosition : 0;
+  await db
+    .prepare(
+      `INSERT INTO profile_layout (user_id, fields_position) VALUES (?, ?)
+       ON CONFLICT (user_id) DO UPDATE SET fields_position = excluded.fields_position`,
+    )
+    .bind(userId, position)
+    .run();
+}
+
+/**
+ * All allow/deny rows for a user's blocks, with the referenced handle joined in
+ * for display. Used both by the public profile (grouped into per-block lists by
+ * `groupViewerLists`) and by the dashboard editor (to show chosen usernames).
+ */
+export async function listBlockViewers(db: D1Database, ownerId: string): Promise<BlockViewerRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT v.block_id AS block_id, v.user_id AS user_id, v.kind AS kind, u.username AS username
+       FROM profile_block_viewers v
+       JOIN profile_blocks b ON b.id = v.block_id
+       LEFT JOIN users u ON u.id = v.user_id
+       WHERE b.user_id = ?
+       ORDER BY v.kind ASC, u.username ASC`,
+    )
+    .bind(ownerId)
+    .all<BlockViewerRow>();
+  return result.results ?? [];
+}
+
+/**
+ * Handle autocomplete for the block allow/deny editors. Only claimed,
+ * non-private handles are surfaced (the same privacy rule the follow lists
+ * use), matched case-insensitively against username or display name.
+ */
+export async function searchUserSuggestions(
+  db: D1Database,
+  query: string,
+  limit = 8,
+): Promise<UserRow[]> {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const like = `%${escapeLike(q)}%`;
+  const result = await db
+    .prepare(
+      `SELECT * FROM users
+       WHERE username IS NOT NULL AND visibility != 'private'
+         AND (lower(username) LIKE ? ESCAPE '\\' OR lower(display_name) LIKE ? ESCAPE '\\')
+       ORDER BY username ASC
+       LIMIT ?`,
+    )
+    .bind(like, like, limit)
+    .all<UserRow>();
+  return result.results ?? [];
+}
+
+/**
+ * Maps normalised (lower-case) usernames to user ids for the block editors.
+ * A name that does not resolve is simply absent from the returned map, so the
+ * route can reject the submit rather than silently dropping a listed account.
+ */
+export async function resolveUsernames(
+  db: D1Database,
+  usernames: string[],
+): Promise<Map<string, string>> {
+  const names = [...new Set(usernames.map((name) => name.trim().toLowerCase()).filter(Boolean))];
+  if (names.length === 0) return new Map();
+  const placeholders = names.map(() => '?').join(', ');
+  const result = await db
+    .prepare(`SELECT id, username FROM users WHERE lower(username) IN (${placeholders})`)
+    .bind(...names)
+    .all<{ id: string; username: string | null }>();
+  const map = new Map<string, string>();
+  for (const row of result.results ?? []) {
+    if (row.username) map.set(row.username.toLowerCase(), row.id);
+  }
+  return map;
 }
 
 /* ----------------------------- login tokens --------------------------- */

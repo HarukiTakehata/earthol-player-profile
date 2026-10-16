@@ -14,8 +14,10 @@ import {
   countFollowers,
   countFollowing,
   getFollowStartedAt,
+  getProfileLayout,
   getUserByUsername,
   isFollowing,
+  listBlockViewers,
   listFields,
   listFollowing,
   listFollowingIds,
@@ -34,6 +36,7 @@ import { appUrl } from '../lib/env';
 import {
   canViewBlock,
   conditionsOfRow,
+  groupViewerLists,
   isBlockVisibility,
   normaliseTagValues,
   type AudienceContext,
@@ -102,7 +105,7 @@ publicRoutes.get('/:username', async (c) => {
   // so they are safe to bake into the cached anonymous HTML; the follow state
   // is viewer-specific and only logged-in viewers ever reach this code path
   // with a fresh render.
-  const [fields, tags, followerCount, followingCount, isFollowingFlag] = await Promise.all([
+  const [fields, tags, followerCount, followingCount, isFollowingFlag, blockRows, storedFieldsPosition] = await Promise.all([
     listFields(c.env.DB, user.id),
     listUserTags(c.env.DB, user.id),
     countFollowers(c.env.DB, user.id),
@@ -110,6 +113,8 @@ publicRoutes.get('/:username', async (c) => {
     viewer && !isOwner
       ? isFollowing(c.env.DB, viewer.id, user.id)
       : Promise.resolve(false),
+    listProfileBlocks(c.env.DB, user.id),
+    getProfileLayout(c.env.DB, user.id),
   ]);
 
   // Hidden tags are visible only to their owner. A value-matching rule would be
@@ -121,32 +126,61 @@ publicRoutes.get('/:username', async (c) => {
   // Profile blocks, audience-filtered. The block audience is computed from the
   // OWNER's tags (hidden ones included — `hidden` is an owner-only display flag
   // and must not silently disable `same_tag`) and, only when a base audience or
-  // a condition can matter, the VIEWER's tags and the age of their follow.
-  const blockRows = await listProfileBlocks(c.env.DB, user.id);
-  // Viewer tags feed `same_tag` (any shared tag) and a block's specific
-  // `required_tag`; the follow start time feeds `minFollowDays`. The owner
-  // needs neither — the owner branch is unconditional.
-  const needsViewerTags =
+  // a condition can matter, the VIEWER's tags, follow edges, and account age.
+  // The allow/deny lists live in a child table, so they are grouped by block id
+  // first; the anonymous cache path needs them too, because a block with a
+  // listed user must never be baked into the shared copy.
+  const viewerLists =
+    blockRows.length > 0
+      ? groupViewerLists(await listBlockViewers(c.env.DB, user.id))
+      : new Map();
+  const conditionsFor = (row: (typeof blockRows)[number]) =>
+    conditionsOfRow(row, viewerLists.get(row.id));
+  const viewerTagsNeeded =
     !cacheable &&
-    blockRows.some(
-      (row) =>
+    blockRows.some((row) => {
+      const conditions = conditionsFor(row);
+      return (
         (isBlockVisibility(row.visibility) && row.visibility === 'same_tag') ||
-        conditionsOfRow(row).requiredTag !== null,
-    );
-  const needsFollowDuration =
-    !cacheable && blockRows.some((row) => conditionsOfRow(row).minFollowDays !== null);
-  const [viewerTagRows, followStartedAt] = await Promise.all([
-    needsViewerTags && viewer && !isOwner ? listUserTags(c.env.DB, viewer.id) : Promise.resolve([]),
-    needsFollowDuration && viewer && !isOwner
+        conditions.requiredTags.length > 0 ||
+        conditions.excludedTags.length > 0
+      );
+    });
+  // A follow start time is needed for `minFollowDays` and also tells us whether
+  // the viewer follows the owner at all (the `followers` / `mutual` relations).
+  const followStartNeeded =
+    !cacheable && blockRows.some((row) => conditionsFor(row).minFollowDays !== null);
+  const viewerFollowsNeeded =
+    !cacheable &&
+    blockRows.some((row) => {
+      const relation = conditionsFor(row).relation;
+      return relation === 'followers' || relation === 'mutual';
+    });
+  const ownerFollowsNeeded =
+    !cacheable &&
+    blockRows.some((row) => {
+      const relation = conditionsFor(row).relation;
+      return relation === 'following' || relation === 'mutual';
+    });
+  const [viewerTagRows, followStartedAt, ownerFollowsViewer] = await Promise.all([
+    viewerTagsNeeded && viewer && !isOwner ? listUserTags(c.env.DB, viewer.id) : Promise.resolve([]),
+    (followStartNeeded || viewerFollowsNeeded) && viewer && !isOwner
       ? getFollowStartedAt(c.env.DB, viewer.id, user.id)
       : Promise.resolve(null),
+    ownerFollowsNeeded && viewer && !isOwner
+      ? isFollowing(c.env.DB, user.id, viewer.id)
+      : Promise.resolve(false),
   ]);
   const audience: AudienceContext = {
     isOwner,
     viewerIsAuthenticated: Boolean(viewer),
+    viewerId: viewer?.id ?? null,
     viewerTagValues: normaliseTagValues(viewerTagRows.map((tag) => tag.value)),
     ownerTagValues: normaliseTagValues(tags.map((tag) => tag.value)),
+    viewerFollowsOwner: followStartedAt !== null,
+    ownerFollowsViewer,
     followStartedAt,
+    viewerAccountCreatedAt: viewer?.created_at ?? null,
     now: Date.now(),
   };
   // The cacheable path is the profile-cache contract: the one anonymous HTML
@@ -156,14 +190,25 @@ publicRoutes.get('/:username', async (c) => {
   // non-cacheable path may include viewer-dependent audiences and conditions,
   // which logged-in viewers are never served from cache.
   const renderBlocks = cacheable
-    ? cacheableBlocks(blockRows)
+    ? cacheableBlocks(blockRows, viewerLists)
     : blockRows.filter((row) => {
         const visibility = isBlockVisibility(row.visibility) ? row.visibility : null;
         // A row with an unknown visibility is not viewable by a non-owner
         // (fail closed) — never `as BlockVisibility`.
         if (visibility === null) return isOwner;
-        return canViewBlock(visibility, conditionsOfRow(row), audience);
+        return canViewBlock(visibility, conditionsFor(row), audience);
       });
+
+  // The stored position counts ALL of the owner's blocks; a viewer may see only
+  // a subset, so map it onto the visible list by counting the visible blocks
+  // that sit before the stored anchor. A hidden block therefore never pushes
+  // the key/value card further down than the owner intended.
+  const visibleBlockIds = new Set(renderBlocks.map((row) => row.id));
+  const fieldsPosition = blockRows.reduce(
+    (count, row, index) =>
+      count + (index < storedFieldsPosition && visibleBlockIds.has(row.id) ? 1 : 0),
+    0,
+  );
 
   const page = (
     <Profile
@@ -177,6 +222,8 @@ publicRoutes.get('/:username', async (c) => {
       fields={fields}
       tags={visibleTags}
       blocks={renderBlocks}
+      blockViewers={viewerLists}
+      fieldsPosition={fieldsPosition}
       csrfToken={c.get('csrfToken')}
       currentUser={navUser(viewer)}
       isOwner={isOwner}

@@ -1,8 +1,8 @@
 /**
  * Small API surface: username availability (htmx, returns an HTML fragment),
- * tag autocomplete (JSON, auth-required), the follow toggle (htmx fragment,
- * auth-required), and the public sitemap. Abuse-prone endpoints are
- * rate-limited per client IP.
+ * tag autocomplete and user autocomplete (JSON, auth-required), the follow
+ * toggle (htmx fragment, auth-required), and the public sitemap. Abuse-prone
+ * endpoints are rate-limited per client IP.
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -17,6 +17,7 @@ import {
   isUsernameTaken,
   listTagSuggestions,
   listUsernames,
+  searchUserSuggestions,
   unfollow,
 } from '../db/queries';
 import { invalidateProfiles } from '../lib/profile-cache';
@@ -68,6 +69,33 @@ apiRoutes.get('/api/tag-suggestions', async (c) => {
     8,
   );
   return c.json(suggestions, 200, { 'Cache-Control': 'no-store' });
+});
+
+/**
+ * Handle autocomplete for the block allow/deny editors. Auth-required and
+ * rate-limited (IP) like the tag suggestions, so it cannot be used to enumerate
+ * handles at scale. Returns `[{ username, displayName, avatarUrl }]`.
+ */
+apiRoutes.get('/api/user-suggestions', async (c) => {
+  if (!c.get('user')) return c.json([], 401);
+
+  const query = (c.req.query('q') ?? '').trim();
+  if (query === '') return c.json([]);
+
+  const ip = clientIp(c.req.raw.headers);
+  const limit = await rateLimit(c.env.KV, `usersug:${ip}`, 120, 3600);
+  if (!limit.allowed) return c.json([], 429);
+
+  const rows = await searchUserSuggestions(c.env.DB, query, 8);
+  return c.json(
+    rows.map((row) => ({
+      username: row.username,
+      displayName: row.display_name,
+      avatarUrl: row.avatar_url,
+    })),
+    200,
+    { 'Cache-Control': 'no-store' },
+  );
 });
 
 /** Renders just the `data-follow-control` cluster for an in-place htmx swap.

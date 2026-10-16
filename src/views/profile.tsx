@@ -3,10 +3,12 @@
  * client-side share tools (QR + NFC), plus an inline `SHARE_SCRIPT` that is
  * locale-agnostic (UI strings arrive as a JSON literal).
  */
+import type { Child } from 'hono/jsx';
 import { Layout } from './layout';
 import type { FieldRow, ProfileBlockRow, UserRow, UserTagRow } from '../db/types';
 import { renderMfm } from '../lib/mfm';
-import { ProfileBlocks } from '../lib/blocks';
+import { ProfileBlockCard } from '../lib/blocks';
+import type { BlockViewerLists } from '../lib/audience';
 import { tagChipClasses } from '../lib/tags';
 import { themeStyle } from '../lib/themes';
 import { isSafeUrl } from '../lib/validate';
@@ -24,6 +26,13 @@ export interface ProfileProps {
   tags: UserTagRow[];
   /** Audience-filtered profile blocks (empty list renders nothing). */
   blocks?: readonly ProfileBlockRow[];
+  /** Per-block allow/deny lists, so an owner's audience marker can name them. */
+  blockViewers?: ReadonlyMap<string, BlockViewerLists>;
+  /**
+   * How many visible blocks come before the key/value fields card. 0 = first,
+   * `blocks.length` = last. The identity card is always above both.
+   */
+  fieldsPosition?: number;
   csrfToken: string;
   currentUser?: { username: string; displayName?: string | null } | null;
   isOwner?: boolean;
@@ -177,6 +186,8 @@ export function Profile({
   fields,
   tags,
   blocks,
+  blockViewers,
+  fieldsPosition,
   csrfToken,
   currentUser,
   isOwner,
@@ -204,6 +215,53 @@ export function Profile({
         ? `${new URL(canonical).origin}${user.avatar_url}`
         : undefined
       : user.avatar_url;
+
+  // The key/value card is one section among the blocks. It is skipped entirely
+  // when the user has no fields, but the ordering position is still honoured.
+  const blockRows = blocks ?? [];
+  const fieldsAt = Math.max(0, Math.min(fieldsPosition ?? 0, blockRows.length));
+  const fieldsCard =
+    fields.length > 0 ? (
+      <div key="fields" class="card p-5" data-fields>
+        <dl class="grid gap-3 sm:grid-cols-2">
+          {fields.map((field) => (
+            <div key={field.id}>
+              <dt class="truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {field.label}
+              </dt>
+              <dd class="mt-1 break-words text-sm font-medium">
+                {isSafeUrl(field.value) ? (
+                  <a
+                    class="font-semibold text-primary hover:underline"
+                    href={field.value.trim()}
+                    rel="nofollow noopener noreferrer"
+                    target="_blank"
+                  >
+                    {field.value.trim().replace(/^https?:\/\//, '')}
+                  </a>
+                ) : (
+                  <span class="text-foreground/90">{field.value}</span>
+                )}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    ) : null;
+  const sectionItems: Child[] = [];
+  blockRows.forEach((row, index) => {
+    if (index === fieldsAt && fieldsCard) sectionItems.push(fieldsCard);
+    sectionItems.push(
+      <ProfileBlockCard
+        key={row.id ?? index}
+        row={row}
+        isOwner={Boolean(isOwner)}
+        viewers={blockViewers}
+        t={t}
+      />,
+    );
+  });
+  if (fieldsAt >= blockRows.length && fieldsCard) sectionItems.push(fieldsCard);
 
   return (
     <Layout
@@ -360,41 +418,21 @@ export function Profile({
                 ))}
               </div>
             ) : null}
-
-            {/*
-              Profile blocks: audience-filtered upstream in src/routes/public.tsx
-              (anonymous cached renders keep only provably-public blocks). The
-              owner additionally sees each block's audience marker. An empty
-              list renders nothing — no empty shell, no layout shift.
-            */}
-            <ProfileBlocks rows={blocks ?? []} isOwner={Boolean(isOwner)} t={t} />
           </div>
         </div>
 
-        {fields.length > 0 ? (
-          <dl class="mt-5 grid gap-3 sm:grid-cols-2">
-            {fields.map((field) => (
-              <div class="card px-4 py-3.5">
-                <dt class="truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {field.label}
-                </dt>
-                <dd class="mt-1 break-words text-sm font-medium">
-                  {isSafeUrl(field.value) ? (
-                    <a
-                      class="font-semibold text-primary hover:underline"
-                      href={field.value.trim()}
-                      rel="nofollow noopener noreferrer"
-                      target="_blank"
-                    >
-                      {field.value.trim().replace(/^https?:\/\//, '')}
-                    </a>
-                  ) : (
-                    <span class="text-foreground/90">{field.value}</span>
-                  )}
-                </dd>
-              </div>
-            ))}
-          </dl>
+        {/*
+          Profile sections: the identity card above is fixed; the blocks and the
+          key/value fields card follow it as independent cards, in the owner's
+          order. Blocks are audience-filtered upstream in src/routes/public.tsx,
+          and `fieldsPosition` already counts only the *visible* blocks, so a
+          viewer never sees the fields card drift because of blocks they cannot
+          see. Nothing renders when every section is empty.
+        */}
+        {sectionItems.length > 0 ? (
+          <div class="mt-5 space-y-5" data-profile-sections>
+            {sectionItems}
+          </div>
         ) : null}
 
         {shareUrl ? (

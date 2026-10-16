@@ -7,16 +7,18 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { AppContext } from '../types';
 import { Dashboard, TotpCard } from '../views/dashboard';
-import type { BlockInput, FieldInput, TagInput } from '../db/types';
+import type { BlockInput, BlockRelation, FieldInput, TagInput } from '../db/types';
 import { DASHBOARD_SECTION_PATH, type DashboardSection } from '../lib/dashboard-nav';
 import {
   createLoginToken,
   confirmTotpFactor,
   deleteTotpFactor,
   getTotpFactor,
+  getProfileLayout,
   getUserByEmail,
   isUsernameReserved,
   isUsernameTakenByOther,
+  listBlockViewers,
   listFields,
   listIdentities,
   listProfileBlocks,
@@ -25,13 +27,15 @@ import {
   replaceFields,
   replaceProfileBlocks,
   replaceUserTags,
+  resolveUsernames,
+  setProfileLayout,
   updateProfile,
   upsertPendingTotpFactor,
   BLOCK_LIMITS,
 } from '../db/queries';
 import { requireAuth } from '../middleware/auth';
 import { invalidateProfiles } from '../lib/profile-cache';
-import { isBlockVisibility } from '../lib/audience';
+import { isBlockRelation, isBlockVisibility } from '../lib/audience';
 import { gravatarAvatarUrl } from '../lib/gravatar';
 import { githubConfigured } from '../lib/oauth-github';
 import { resolveGithub, resolveGravatarMirror, resolveMailer } from '../lib/config';
@@ -91,6 +95,8 @@ function errorMessage(code: string | undefined, t: TranslateFn): string | undefi
       return t('dash.err.invalidBlock');
     case 'too_many_blocks':
       return t('dash.err.tooManyBlocks', { max: String(BLOCK_LIMITS.maxBlocks) });
+    case 'unknown_block_user':
+      return t('dash.err.unknownBlockUser');
     case 'invalid_tag':
       return t('dash.err.invalidTag');
     case 'too_many_tags':
@@ -157,13 +163,15 @@ async function renderDashboard(c: Context<AppContext>, section: DashboardSection
 
   const t = c.get('t');
   const settings = c.get('settings');
-  const [fields, tags, tagCategories, identities, totpFactor, blocks] = await Promise.all([
+  const [fields, tags, tagCategories, identities, totpFactor, blocks, blockViewers, fieldsPosition] = await Promise.all([
     section === 'fields' ? listFields(c.env.DB, user.id) : Promise.resolve([]),
     section === 'tags' ? listUserTags(c.env.DB, user.id) : Promise.resolve([]),
     section === 'tags' ? listTagCategories(c.env.DB) : Promise.resolve([]),
     section === 'security' ? listIdentities(c.env.DB, user.id) : Promise.resolve([]),
     section === 'security' ? getTotpFactor(c.env.DB, user.id) : Promise.resolve(null),
     section === 'blocks' ? listProfileBlocks(c.env.DB, user.id) : Promise.resolve([]),
+    section === 'blocks' ? listBlockViewers(c.env.DB, user.id) : Promise.resolve([]),
+    section === 'blocks' ? getProfileLayout(c.env.DB, user.id) : Promise.resolve(0),
   ]);
   const saved = c.req.query('saved');
   const message =
@@ -216,6 +224,8 @@ async function renderDashboard(c: Context<AppContext>, section: DashboardSection
       tags={tags}
       tagCategories={tagCategories}
       blocks={blocks}
+      blockViewers={blockViewers}
+      fieldsPosition={fieldsPosition}
       identities={identities}
       githubEnabled={githubConfigured(resolveGithub(c.env, settings)) && settings.githubLoginEnabled}
       magicEnabled={settings.magicLinkEnabled}
@@ -379,10 +389,40 @@ dashboardRoutes.post('/dashboard/blocks', async (c) => {
   const bodies = toArray(body.body);
   const items = toArray(body.items);
   const visibilities = toArray(body.visibility);
-  // The two optional per-block conditions (audience refinement). Both are
-  // optional: an empty value means "no condition" for that block.
-  const requiredTags = toArray(body.required_tag);
+  // Audience refinements. Every list/field is optional: an empty value means
+  // "no such condition" for that block.
+  const relations = toArray(body.relation);
+  const requiredTagsRaw = toArray(body.required_tags);
+  const tagMatches = toArray(body.tag_match);
+  const excludedTagsRaw = toArray(body.excluded_tags);
   const minFollowDays = toArray(body.min_follow_days);
+  const minAccountAgeDays = toArray(body.min_account_age_days);
+  const visibleFromRaw = toArray(body.visible_from);
+  const visibleUntilRaw = toArray(body.visible_until);
+  const allowUsersRaw = toArray(body.allow_users);
+  const denyUsersRaw = toArray(body.deny_users);
+
+  const splitLines = (value: string): string[] =>
+    value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+  /** Parses a `datetime-local` value to epoch ms (UTC). null = empty, undefined = invalid. */
+  function parseDateTime(value: string): number | null | undefined {
+    if (value === '') return null;
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+    if (!match) return undefined;
+    const ms = Date.UTC(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      Number(match[6] ?? '0'),
+    );
+    return Number.isFinite(ms) ? ms : undefined;
+  }
 
   /** One submitted row, or null when fully empty (dropped, as with fields). */
   function rowAt(index: number) {
@@ -391,30 +431,70 @@ dashboardRoutes.post('/dashboard/blocks', async (c) => {
     const title = (titles[index] ?? '').trim();
     const bodyText = (bodies[index] ?? '').trim();
     // Gallery items are one URL per line; blanks collapse to nothing.
-    const images =
-      (items[index] ?? '')
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-    const requiredTag = (requiredTags[index] ?? '').trim();
+    const images = splitLines(items[index] ?? '');
+    const relation = (relations[index] ?? '').trim();
+    const requiredTags = splitLines(requiredTagsRaw[index] ?? '');
+    const tagMatch = (tagMatches[index] ?? '').trim();
+    const excludedTags = splitLines(excludedTagsRaw[index] ?? '');
+    const allowUsers = splitLines(allowUsersRaw[index] ?? '');
+    const denyUsers = splitLines(denyUsersRaw[index] ?? '');
     const minFollowDaysRaw = (minFollowDays[index] ?? '').trim();
-    return { kind, visibility, title, bodyText, images, requiredTag, minFollowDaysRaw };
+    const minAccountAgeDaysRaw = (minAccountAgeDays[index] ?? '').trim();
+    return {
+      kind, visibility, title, bodyText, images, relation, requiredTags, tagMatch, excludedTags,
+      allowUsers, denyUsers, minFollowDaysRaw, minAccountAgeDaysRaw,
+      visibleFromRaw: (visibleFromRaw[index] ?? '').trim(),
+      visibleUntilRaw: (visibleUntilRaw[index] ?? '').trim(),
+    };
   }
 
   const seen: BlockInput[] = [];
-  for (let i = 0; i < Math.max(kinds.length, visibilities.length, titles.length, bodies.length, items.length); i += 1) {
-    const row = rowAt(i);
-    // A fully-defaulted row with no content at all is dropped, as with fields.
-    // A row that only sets a condition but has no content is still "empty" —
-    // a condition alone is not a visible block.
+  const pending: { block: BlockInput; allowUsers: string[]; denyUsers: string[] }[] = [];
+  const allUsernames: string[] = [];
+  // The form interleaves block rows with exactly one non-removable `slot=fields`
+  // row (the key/value card). Row order is the profile order, and only block
+  // rows consume the index-aligned block arrays — so walk the submitted `slot`
+  // list and keep a separate block cursor, recording how many blocks survive
+  // before the fields row to get the card's position.
+  const slots = toArray(body.slot);
+  const rowCount =
+    slots.length > 0
+      ? slots.length
+      : Math.max(
+          kinds.length, visibilities.length, titles.length, bodies.length, items.length,
+          relations.length, requiredTagsRaw.length, tagMatches.length, excludedTagsRaw.length,
+          minFollowDays.length, minAccountAgeDays.length, visibleFromRaw.length,
+          visibleUntilRaw.length, allowUsersRaw.length, denyUsersRaw.length,
+        );
+  let fieldsPosition: number | null = null;
+  let blockIndex = 0;
+
+  for (let i = 0; i < rowCount; i += 1) {
+    if (slots[i] === 'fields') {
+      // Only the first marker counts; a duplicated one is ignored.
+      if (fieldsPosition === null) fieldsPosition = seen.length;
+      continue;
+    }
+    const row = rowAt(blockIndex);
+    blockIndex += 1;
+    // A fully-defaulted row with no content and no condition is dropped, as with
+    // fields. A condition alone is not a visible block, so it is still "empty".
     const empty =
       (!row.kind || row.kind === 'text') &&
       (!row.visibility || row.visibility === 'public') &&
       !row.title &&
       !row.bodyText &&
       row.images.length === 0 &&
-      !row.requiredTag &&
-      !row.minFollowDaysRaw;
+      !row.relation &&
+      (!row.tagMatch || row.tagMatch === 'any') &&
+      row.requiredTags.length === 0 &&
+      row.excludedTags.length === 0 &&
+      row.allowUsers.length === 0 &&
+      row.denyUsers.length === 0 &&
+      !row.minFollowDaysRaw &&
+      !row.minAccountAgeDaysRaw &&
+      !row.visibleFromRaw &&
+      !row.visibleUntilRaw;
     if (empty) continue;
 
     // Content is judged against the kind the row claims, because that is what
@@ -432,43 +512,102 @@ dashboardRoutes.post('/dashboard/blocks', async (c) => {
     // would accept and it is the widest audience there is, so a typo or a
     // crafted post would publish a block the user meant to restrict, and it
     // would contradict `audience.ts`, which fails closed on unknown values.
-    // Coercing a kind would likewise silently change what the user asked for.
-    if (!isBlockVisibility(row.visibility) || (row.kind !== 'text' && row.kind !== 'gallery')) {
+    // Coercing a kind or the tag-match mode would likewise change the rule.
+    if (
+      !isBlockVisibility(row.visibility) ||
+      (row.kind !== 'text' && row.kind !== 'gallery') ||
+      (row.relation !== '' && !isBlockRelation(row.relation)) ||
+      (row.tagMatch !== '' && row.tagMatch !== 'any' && row.tagMatch !== 'all')
+    ) {
       return c.redirect('/dashboard/blocks?error=invalid_block');
     }
 
-    // The two conditions are validated here rather than coerced downstream: a
-    // non-empty `min_follow_days` that is not a whole non-negative number (or
-    // over the cap), or a `required_tag` too long, is rejected — mirroring the
-    // kind/visibility rule above. An empty value is simply "no condition".
+    // Conditions are validated here rather than coerced downstream: an
+    // over-long tag value, an over-count list, a bad day count, a malformed
+    // datetime, or an inverted window are all rejected (mirroring the
+    // kind/visibility rule). An empty value is simply "no condition".
     const minOk =
       row.minFollowDaysRaw === '' ||
       (/^\d+$/.test(row.minFollowDaysRaw) &&
-        Number(row.minFollowDaysRaw) <= BLOCK_LIMITS.maxMinFollowDays);
-    if (!minOk || row.requiredTag.length > BLOCK_LIMITS.maxRequiredTagLength) {
+        Number(row.minFollowDaysRaw) <= BLOCK_LIMITS.maxMinDays);
+    const ageOk =
+      row.minAccountAgeDaysRaw === '' ||
+      (/^\d+$/.test(row.minAccountAgeDaysRaw) &&
+        Number(row.minAccountAgeDaysRaw) <= BLOCK_LIMITS.maxMinDays);
+    const tagsOk =
+      row.requiredTags.length <= BLOCK_LIMITS.maxRequiredTags &&
+      row.excludedTags.length <= BLOCK_LIMITS.maxExcludedTags &&
+      [...row.requiredTags, ...row.excludedTags].every(
+        (tag) => tag.length <= BLOCK_LIMITS.maxTagValueLength,
+      );
+    const usersOk =
+      row.allowUsers.length + row.denyUsers.length <= BLOCK_LIMITS.maxListedUsers;
+    const visibleFrom = parseDateTime(row.visibleFromRaw);
+    const visibleUntil = parseDateTime(row.visibleUntilRaw);
+    const windowOk =
+      visibleFrom !== undefined &&
+      visibleUntil !== undefined &&
+      !(visibleFrom !== null && visibleUntil !== null && visibleFrom >= visibleUntil);
+    if (!minOk || !ageOk || !tagsOk || !usersOk || !windowOk) {
       return c.redirect('/dashboard/blocks?error=invalid_block');
     }
 
-    seen.push({
+    const allowUsers = row.allowUsers.map(normalizeUsername).filter(Boolean);
+    const denyUsers = row.denyUsers.map(normalizeUsername).filter(Boolean);
+    allUsernames.push(...allowUsers, ...denyUsers);
+
+    const block: BlockInput = {
       kind: row.kind,
       title: row.title || null,
       body: row.kind === 'gallery' ? null : row.bodyText,
       items: row.kind === 'gallery' ? JSON.stringify(row.images) : null,
       visibility: row.visibility,
-      requiredTag: row.requiredTag || null,
-      // Validated above: a non-empty `minFollowDaysRaw` is a whole 0..cap number.
-      minFollowDays: row.minFollowDaysRaw === '' ? null : Number(row.minFollowDaysRaw),
-    });
+      rules: {
+        relation: row.relation === '' ? null : (row.relation as BlockRelation),
+        requiredTags: row.requiredTags,
+        tagMatch: row.tagMatch === 'all' ? 'all' : 'any',
+        excludedTags: row.excludedTags,
+        minFollowDays: row.minFollowDaysRaw === '' ? null : Number(row.minFollowDaysRaw),
+        minAccountAgeDays:
+          row.minAccountAgeDaysRaw === '' ? null : Number(row.minAccountAgeDaysRaw),
+        visibleFrom: visibleFrom ?? null,
+        visibleUntil: visibleUntil ?? null,
+      },
+      // User ids are resolved from usernames below, once for the whole submit.
+      allowUserIds: [],
+      denyUserIds: [],
+    };
+    pending.push({ block, allowUsers, denyUsers });
+    seen.push(block);
   }
 
   if (seen.length > BLOCK_LIMITS.maxBlocks) {
     return c.redirect(`/dashboard/blocks?error=too_many_blocks`);
   }
 
+  // Resolve every listed handle to a user id in one query. An unknown handle is
+  // rejected rather than silently dropped, so a typo is surfaced instead of
+  // quietly narrowing the audience. The owner is never listed against itself.
+  const uniqueNames = [...new Set(allUsernames)];
+  const resolved = uniqueNames.length > 0 ? await resolveUsernames(c.env.DB, uniqueNames) : new Map();
+  if (uniqueNames.some((name) => !resolved.has(name))) {
+    return c.redirect('/dashboard/blocks?error=unknown_block_user');
+  }
+  for (const entry of pending) {
+    entry.block.allowUserIds = entry.allowUsers
+      .map((name) => resolved.get(name))
+      .filter((id): id is string => Boolean(id) && id !== user.id);
+    entry.block.denyUserIds = entry.denyUsers
+      .map((name) => resolved.get(name))
+      .filter((id): id is string => Boolean(id) && id !== user.id);
+  }
+
   // Replace-on-submit: every save rewrites the whole list. `replaceProfileBlocks`
   // clamps lengths and drops anything that still fails the CHECK constraints, so
   // a hostile post can only ever produce at most `maxBlocks` in-range rows.
   await replaceProfileBlocks(c.env.DB, user.id, seen);
+  // The key/value card's position, clamped to the blocks that were stored.
+  await setProfileLayout(c.env.DB, user.id, Math.min(fieldsPosition ?? 0, seen.length));
   // Profile mutation: the cached anonymous profile HTML embeds blocks, so it
   // must not survive the change (a later anonymous fetch would serve it stale).
   await invalidateProfiles(c.env.KV, [user.username]);

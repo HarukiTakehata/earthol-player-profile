@@ -546,7 +546,7 @@ export function AdminView({
               id="openai_prompt_chat"
               name="openai_prompt_chat"
               rows={4}
-              class="field w-full rounded-2xl"
+              class="field w-full"
               placeholder={t('admin.ai.promptHint')}
             >{integrations.openaiPromptChat}</textarea>
           </div>
@@ -1083,7 +1083,7 @@ function LandingField(props: {
           rows={3}
           maxlength={MAX_LANDING_COPY}
           placeholder={props.placeholder}
-          class="field w-full rounded-2xl"
+          class="field w-full"
         >{props.value}</textarea>
       ) : (
         <input

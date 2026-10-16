@@ -146,6 +146,10 @@ CREATE INDEX idx_follows_following ON follows (following_id);
 -- a body, and a 'gallery' block without items. `idx_profile_blocks_user`
 -- covers the per-user list ordered by `sort_order`; the FK cascades on user
 -- deletion. Same definition as `migrations/0003_create_profile_blocks.sql`.
+--
+-- `required_tag` / `min_follow_days` are LEGACY: `migrations/0004` folded their
+-- values into `profile_block_rules` and cleared them. The columns stay (SQLite
+-- cannot drop them without a one-shot rebuild) but nothing reads or writes them.
 CREATE TABLE profile_blocks (
   id               TEXT PRIMARY KEY,
   user_id          TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -167,3 +171,52 @@ CREATE TABLE profile_blocks (
 );
 
 CREATE INDEX idx_profile_blocks_user ON profile_blocks (user_id, sort_order);
+
+-- Per-block audience refinements, as a 1:1 satellite of `profile_blocks` (the
+-- table is deliberately left untouched so `migrations/0004` stays idempotent).
+-- Every column is optional; the row exists only while the block carries a rule.
+-- Same definition as `migrations/0004_profile_block_rules.sql`.
+CREATE TABLE profile_block_rules (
+  block_id             TEXT PRIMARY KEY REFERENCES profile_blocks (id) ON DELETE CASCADE,
+  relation             TEXT,
+  required_tags        TEXT,
+  tag_match            TEXT NOT NULL DEFAULT 'any',
+  excluded_tags        TEXT,
+  min_follow_days      INTEGER,
+  min_account_age_days INTEGER,
+  visible_from         INTEGER,
+  visible_until        INTEGER,
+  CHECK (relation IS NULL OR relation IN ('followers', 'following', 'mutual')),
+  CHECK (tag_match IN ('any', 'all')),
+  CHECK (min_follow_days IS NULL OR min_follow_days >= 0),
+  CHECK (min_account_age_days IS NULL OR min_account_age_days >= 0),
+  CHECK (visible_until IS NULL OR visible_from IS NULL OR visible_from < visible_until)
+);
+
+CREATE INDEX idx_profile_block_rules_relation ON profile_block_rules (relation);
+
+-- Explicit per-user allow/deny lists for a block: `allow` narrows the audience
+-- to a named set, `deny` excludes named accounts. Both cascade with the block
+-- and with the referenced user, so a deleted account leaves no dangling id.
+-- Same definition as `migrations/0004_profile_block_rules.sql`.
+CREATE TABLE profile_block_viewers (
+  block_id TEXT NOT NULL REFERENCES profile_blocks (id) ON DELETE CASCADE,
+  user_id  TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  kind     TEXT NOT NULL,
+  PRIMARY KEY (block_id, user_id),
+  CHECK (kind IN ('allow', 'deny'))
+);
+
+CREATE INDEX idx_profile_block_viewers_user ON profile_block_viewers (user_id);
+
+-- -------------------------------------------------------- profile layout
+-- Where the key/value "fields" card sits among the profile blocks: the number
+-- of blocks that come before it (0 = first, N = last). The identity card is
+-- fixed at the top and is not part of this ordering. One row per user; absent
+-- means position 0. The FK cascades on user deletion. Same definition as
+-- `migrations/0005_profile_layout.sql`.
+CREATE TABLE profile_layout (
+  user_id         TEXT PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+  fields_position INTEGER NOT NULL DEFAULT 0,
+  CHECK (fields_position >= 0)
+);

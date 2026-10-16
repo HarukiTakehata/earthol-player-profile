@@ -4,11 +4,23 @@
 export type BlockKind = 'text' | 'gallery';
 
 /**
- * Per-block audience. Mirrors the `profile_blocks.visibility` CHECK in
+ * Per-block base audience. Mirrors the `profile_blocks.visibility` CHECK in
  * `schema.sql` — shared with the audience predicate, so the two must always
- * agree on the literal values.
+ * agree on the literal values. Widest→narrowest, as listed in `AUDIENCES`
+ * (`src/lib/audience.ts`).
  */
 export type BlockVisibility = 'public' | 'users' | 'same_tag' | 'self';
+
+/**
+ * A follow-relation refinement, stored in `profile_block_rules.relation` and
+ * ANDed on top of `visibility` (see `src/lib/audience.ts`). Kept off the
+ * `visibility` CHECK on purpose: widening that CHECK needs a table rebuild,
+ * which would make `migrations/0004` non-idempotent.
+ */
+export type BlockRelation = 'followers' | 'following' | 'mutual';
+
+/** How a block's `required_tags` list is matched: any one value, or all of them. */
+export type TagMatch = 'any' | 'all';
 
 export interface UserRow {
   id: string;
@@ -108,12 +120,30 @@ export interface FieldInput {
 }
 
 /**
+ * The optional refinements for one block, stored in `profile_block_rules`.
+ * Every field is optional; an absent field means "no such condition".
+ */
+export interface BlockRulesInput {
+  /** Follow-relation requirement, or null. */
+  relation: BlockRelation | null;
+  /** Tag values the viewer must carry (matched by `tagMatch`). */
+  requiredTags: string[];
+  tagMatch: TagMatch;
+  /** Tag values the viewer must not carry (any hit excludes them). */
+  excludedTags: string[];
+  minFollowDays: number | null;
+  minAccountAgeDays: number | null;
+  /** Epoch ms the block starts/stops being visible; null = unbounded. */
+  visibleFrom: number | null;
+  visibleUntil: number | null;
+}
+
+/**
  * A profile block as a caller supplies it. `user_id`, `id`, and the timestamps
  * are assigned by `replaceProfileBlocks` — never by the caller. A 'text' block
  * must carry a non-null `body`, a 'gallery' block a non-null `items` (a JSON
- * array string), matching the table's CHECK constraints. `requiredTag` and
- * `minFollowDays` are the two optional conditions that refine `visibility`
- * (see `src/lib/audience.ts`); both null means "no extra condition".
+ * array string), matching the table's CHECK constraints. `rules` and the two
+ * user-id lists are the audience refinements (`src/lib/audience.ts`).
  */
 export interface BlockInput {
   kind: BlockKind;
@@ -121,10 +151,19 @@ export interface BlockInput {
   body: string | null;
   items: string | null;
   visibility: BlockVisibility;
-  requiredTag: string | null;
-  minFollowDays: number | null;
+  rules: BlockRulesInput;
+  /** User ids explicitly allowed / denied; resolved by the route from usernames. */
+  allowUserIds: string[];
+  denyUserIds: string[];
 }
 
+/**
+ * A `profile_blocks` row LEFT JOINed with its `profile_block_rules` satellite
+ * (`*` from the block plus `rule_*` from the rules, null when the block has no
+ * rules). D1 rows are untyped at the boundary, so every value is read
+ * defensively. `required_tag` / `min_follow_days` are legacy columns kept only
+ * so `SELECT b.*` keeps working; nothing reads them.
+ */
 export interface ProfileBlockRow {
   id: string;
   user_id: string;
@@ -133,13 +172,55 @@ export interface ProfileBlockRow {
   body: string | null;
   items: string | null;
   visibility: string;
-  /** Normalised tag value the viewer must have, or null for no tag condition. */
-  required_tag: string | null;
-  /** Minimum whole days the viewer must have been following, or null for none. */
-  min_follow_days: number | null;
+  /** @deprecated folded into `rule_required_tags` by `migrations/0004`. */
+  required_tag?: string | null;
+  /** @deprecated folded into `rule_min_follow_days` by `migrations/0004`. */
+  min_follow_days?: number | null;
   sort_order: number;
   created_at: number;
   updated_at: number;
+  /** `'followers'` | `'following'` | `'mutual'`, or null. */
+  rule_relation: string | null;
+  /** JSON array of normalised tag values the viewer must carry, or null. */
+  rule_required_tags: string | null;
+  /** `'any'` | `'all'` — how `rule_required_tags` is matched. */
+  rule_tag_match: string | null;
+  /** JSON array of normalised tag values that exclude the viewer, or null. */
+  rule_excluded_tags: string | null;
+  /** Minimum whole days the viewer must have been following, or null. */
+  rule_min_follow_days: number | null;
+  /** Minimum whole days the viewer's account must have existed, or null. */
+  rule_min_account_age_days: number | null;
+  /** Epoch ms the block becomes visible / stops being visible, or null. */
+  rule_visible_from: number | null;
+  rule_visible_until: number | null;
+}
+
+/** A `profile_block_rules` row (1:1 with a block; absent = no rules). */
+export interface ProfileBlockRuleRow {
+  block_id: string;
+  relation: string | null;
+  required_tags: string | null;
+  tag_match: string;
+  excluded_tags: string | null;
+  min_follow_days: number | null;
+  min_account_age_days: number | null;
+  visible_from: number | null;
+  visible_until: number | null;
+}
+
+/** One explicit allow/deny row in `profile_block_viewers` (with `username` joined for display). */
+export interface BlockViewerRow {
+  block_id: string;
+  user_id: string;
+  kind: string;
+  username: string | null;
+}
+
+/** A `profile_layout` row: where the key/value fields card sits among the blocks. */
+export interface ProfileLayoutRow {
+  user_id: string;
+  fields_position: number;
 }
 
 export interface TagInput {
