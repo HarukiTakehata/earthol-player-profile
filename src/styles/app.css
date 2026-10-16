@@ -405,29 +405,30 @@
   display: inline-block;
 }
 
-/* MFM bios (rendered locally from mfm-js AST in src/lib/mfm.ts) */
-.mfm-bio {
+/* MFM user-authored text (bio + text-block bodies; rendered locally from the
+   mfm-js AST in src/lib/mfm.ts) */
+.mfm-body {
   overflow-wrap: anywhere;
 }
-.mfm-bio .mfm-paragraph {
+.mfm-body .mfm-paragraph {
   margin: 0;
 }
-.mfm-bio a {
+.mfm-body a {
   color: hsl(var(--primary));
   font-weight: 600;
   text-decoration: none;
 }
-.mfm-bio a:hover {
+.mfm-body a:hover {
   text-decoration: underline;
 }
-.mfm-bio strong {
+.mfm-body strong {
   font-weight: 700;
 }
-.mfm-bio del {
+.mfm-body del {
   text-decoration: line-through;
   opacity: 0.75;
 }
-.mfm-bio small {
+.mfm-body small {
   font-size: 0.82em;
 }
 .mfm-inline-code,

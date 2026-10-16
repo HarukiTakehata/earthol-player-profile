@@ -1243,6 +1243,9 @@ function BlockEditorRow(props: { block: ProfileBlockRow | null; t: TranslateFn }
         >
           {block?.body ?? ''}
         </textarea>
+        <p class="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+          {t('dash.field.bioHint')}
+        </p>
       </div>
 
       <div data-block-gallery class="mt-2">

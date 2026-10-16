@@ -5,7 +5,7 @@
  */
 import { Layout } from './layout';
 import type { FieldRow, ProfileBlockRow, UserRow, UserTagRow } from '../db/types';
-import { renderMfmBio } from '../lib/mfm';
+import { renderMfm } from '../lib/mfm';
 import { ProfileBlocks } from '../lib/blocks';
 import { tagChipClasses } from '../lib/tags';
 import { themeStyle } from '../lib/themes';
@@ -338,8 +338,8 @@ export function Profile({
 
             {user.bio ? (
               <div
-                class="mfm-bio mt-5 leading-relaxed text-foreground/85"
-                dangerouslySetInnerHTML={{ __html: renderMfmBio(user.bio) }}
+                class="mfm-body mt-5 leading-relaxed text-foreground/85"
+                dangerouslySetInnerHTML={{ __html: renderMfm(user.bio) }}
               />
             ) : null}
 

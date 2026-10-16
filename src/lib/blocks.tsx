@@ -3,12 +3,13 @@
  * becomes markup on the public profile.
  *
  * Security posture (deliberate):
- * - Text-block bodies are **user-authored free text**. They are rendered as
- *   escaped plain text with `whitespace-pre-line`, never through
- *   `dangerouslySetInnerHTML`. Routing them through the MFM integrator
- *   (`src/lib/mfm.ts`) is a planned follow-up, not an oversight: until that
- *   work lands with its escaping story reviewed, plain text is the safe
- *   default. Do not change this without handling the escaping.
+ * - Text-block bodies are **user-authored MFM**, rendered through the same
+ *   whitelisted integrator as the bio (`renderMfm` in `src/lib/mfm.ts`): every
+ *   text run is escaped, links only survive as http(s), and `$[...]` functions
+ *   only contribute classes/styles from its fixed allow-list. A body that
+ *   fails to parse falls back to escaped plain text inside the integrator, so
+ *   nothing user-authored reaches the DOM unescaped. Do not bypass the
+ *   integrator with a looser renderer.
  * - Gallery `items` is a stored JSON array of arbitrary user strings. It is
  *   parsed defensively (a non-array or unparsable value yields no items) and
  *   an item only ever becomes an `<img src>` when it passes `isSafeUrl`, the
@@ -21,6 +22,7 @@
  */
 import type { BlockKind, BlockVisibility, ProfileBlockRow } from '../db/types';
 import { AUDIENCES, isBlockVisibility, isViewerIndependent } from './audience';
+import { renderMfm } from './mfm';
 import { isSafeUrl } from './validate';
 import type { TranslateFn } from '../i18n';
 
@@ -108,9 +110,13 @@ export function ProfileBlocks(props: {
           <div key={row.id ?? index} class="rounded-2xl bg-muted/40 p-4" data-block>
             {row.title ? <h3 class="break-words text-sm font-bold tracking-tight">{row.title}</h3> : null}
             {kind === 'text' ? (
-              <p class="mt-1 whitespace-pre-line break-words text-sm leading-relaxed text-foreground/85">
-                {row.body ?? ''}
-              </p>
+              row.body ? (
+                <div
+                  class="mfm-body mt-1 break-words text-sm leading-relaxed text-foreground/85"
+                  data-block-body
+                  dangerouslySetInnerHTML={{ __html: renderMfm(row.body) }}
+                />
+              ) : null
             ) : (
               <GalleryGrid items={parseGalleryItems(row.items)} />
             )}

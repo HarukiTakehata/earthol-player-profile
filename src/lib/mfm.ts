@@ -2,7 +2,8 @@ import { parse } from 'mfm-js';
 import type { MfmFn, MfmNode } from 'mfm-js';
 
 /**
- * Local MFM → HTML integrator for profile bios.
+ * Local MFM → HTML integrator for user-authored MFM fields (profile bio and
+ * text-block bodies).
  *
  * `mfm-js` only produces an AST, so this module owns the (whitelisted) HTML it
  * emits: every text run is escaped, URLs must parse as http(s), and `$[...]`
@@ -222,7 +223,7 @@ function plainFallback(source: string): string {
   return `<span class="mfm-plain">${textHtml(source)}</span>`;
 }
 
-export function renderMfmBio(source: string): string {
+export function renderMfm(source: string): string {
   const input = source.replace(/\r\n?/g, '\n').trim();
   if (!input) return '';
 
